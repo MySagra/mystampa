@@ -1,0 +1,42 @@
+{
+  id: 6,
+  displayCode: '5BL',
+  table: '5',
+  customer: 'Mario Rossi',
+  createdAt: '2025-11-28T10: 55: 15.983Z',
+  confirmedAt: '2025-11-28T11: 01: 08.225Z',
+  ticketNumber: 2,
+  status: 'CONFIRMED',
+  paymentMethod: 'CARD',
+  subTotal: '31',
+  discount: '0',
+  total: '31',
+  userId: 'cmif13wap0003t4fk0ij4682h',
+  cashRegisterId: 'cmif3kark0004t4u8x26vvudu',
+  orderItems: [
+        {
+      id: 'cmir51j40007t4h4g786kl9j',
+      quantity: 1,
+      orderId: 6,
+      foodId: 'cmks5ebfy0008rv57twkouphx',
+      notes: null,
+      surcharge: 0
+        },
+        {
+      id: 'cmir51j40006t4h4yylqbdz3',
+      quantity: 1,
+      orderId: 6,
+      foodId: 'cmks5ebfy0008rv57twkouphx',
+      notes: 'No formaggio',
+      surcharge: 2
+        },
+        {
+      id: 'cmir51j40006t4h4yylqbdz3',
+      quantity: 3,
+      orderId: 6,
+      foodId: 'cmks6ebfy0008rv57twkouphx',
+      notes: 'No formaggio',
+      surcharge: 2
+        }
+    ]
+}
