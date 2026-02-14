@@ -1,42 +1,39 @@
 {
-  id: 6,
-  displayCode: '5BL',
-  table: '5',
-  customer: 'Mario Rossi',
-  createdAt: '2025-11-28T10: 55: 15.983Z',
-  confirmedAt: '2025-11-28T11: 01: 08.225Z',
-  ticketNumber: 2,
-  status: 'CONFIRMED',
-  paymentMethod: 'CARD',
-  subTotal: '31',
-  discount: '0',
-  total: '31',
-  userId: 'cmif13wap0003t4fk0ij4682h',
-  cashRegisterId: 'cmif3kark0004t4u8x26vvudu',
-  orderItems: [
-        {
-      id: 'cmir51j40007t4h4g786kl9j',
-      quantity: 1,
-      orderId: 6,
-      foodId: 'cmks5ebfy0008rv57twkouphx',
-      notes: null,
-      surcharge: 0
-        },
-        {
-      id: 'cmir51j40006t4h4yylqbdz3',
-      quantity: 1,
-      orderId: 6,
-      foodId: 'cmks5ebfy0008rv57twkouphx',
-      notes: 'No formaggio',
-      surcharge: 2
-        },
-        {
-      id: 'cmir51j40006t4h4yylqbdz3',
-      quantity: 3,
-      orderId: 6,
-      foodId: 'cmks6ebfy0008rv57twkouphx',
-      notes: 'No formaggio',
-      surcharge: 2
-        }
-    ]
+  "id": 3,
+  "displayCode": "LTK",
+  "table": "5",
+  "customer": "Mario Rossi",
+  "createdAt": "2026-02-09T13:48:59.507Z",
+  "confirmedAt": "2026-02-09T13:48:59.504Z",
+  "ticketNumber": 3,
+  "status": "CONFIRMED",
+  "paymentMethod": "CASH",
+  "subTotal": "48",
+  "discount": "2.5",
+  "surcharge": "1.5",
+  "total": "47",
+  "userId": "cmlf80xks0003t4ccfz8913ow",
+  "cashRegisterId": "cmlf84p0w0003t4wklt9nar5s",
+  "orderItems": [
+    {
+      "id": "cmlf8a391000at4wkx6eovt4u",
+      "quantity": 1,
+      "orderId": 3,
+      "foodId": "cmlf80xl00008t4ccsvcp1q1e",
+      "unitPrice": "15.5",
+      "unitSurcharge": "0",
+      "total": "15.5",
+      "notes": null
+    },
+    {
+      "id": "cmlf8a3910009t4wk87zluy4d",
+      "quantity": 2,
+      "orderId": 3,
+      "foodId": "cmlf80xl00008t4ccsvcp1q1e",
+      "unitPrice": "15.5",
+      "unitSurcharge": "0.75",
+      "total": "32.5",
+      "notes": "No onions, extra cheese"
+    }
+  ]
 }

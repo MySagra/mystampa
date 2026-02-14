@@ -16,7 +16,9 @@
       "post": {
         "summary": "Stampa ordine su stampanti di cucina e cassa",
         "description": "Riceve un ordine (IncomingOrder) contenente id, displayCode, tavolo, cliente, orari e un array di orderItems. Ogni orderItem include id, quantità, foodId, eventuali note e un supplemento (surcharge). Per ogni foodId il server interroga l'API esterna `/v1/foods/{id}` per ottenere nome, prezzo e printerId, raggruppa gli articoli per printerId e stampa uno scontrino di cucina per ciascuna stampante (senza prezzi). Se l'ordine contiene un cashRegisterId viene interrogato `/v1/cash-registers/{id}?include=printer` e si produce uno scontrino fiscale con prezzi, supplementi, sconto e totale. Quando una stampante non è disponibile lo scontrino viene stampato a schermo.",
-        "tags": ["Print"],
+        "tags": [
+          "Print"
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -69,10 +71,14 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "ok": { "type": "boolean" },
+                    "ok": {
+                      "type": "boolean"
+                    },
                     "kitchenPrinters": {
                       "type": "array",
-                      "items": { "type": "string" },
+                      "items": {
+                        "type": "string"
+                      },
                       "description": "Elenco degli id delle stampanti di cucina coinvolte"
                     },
                     "cashPrinterId": {
@@ -84,7 +90,10 @@
                 },
                 "example": {
                   "ok": true,
-                  "kitchenPrinters": ["abc123", "def456"],
+                  "kitchenPrinters": [
+                    "abc123",
+                    "def456"
+                  ],
                   "cashPrinterId": "ghi789"
                 }
               }
@@ -101,47 +110,193 @@
     "schemas": {
       "IncomingOrder": {
         "type": "object",
-        "required": ["id", "orderItems"],
+        "required": [
+          "id",
+          "orderItems"
+        ],
         "properties": {
           "id": {
             "oneOf": [
-              { "type": "string" },
-              { "type": "integer" }
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
             ],
             "description": "Unique identifier of the order"
           },
-          "displayCode": { "type": "string", "nullable": true },
-          "table": { "type": "string", "nullable": true },
-          "customer": { "type": "string", "nullable": true },
-          "createdAt": { "type": "string", "format": "date-time", "nullable": true },
-          "confirmedAt": { "type": "string", "format": "date-time", "nullable": true },
-          "ticketNumber": { "type": "integer", "nullable": true },
-          "status": { "type": "string", "nullable": true },
-          "paymentMethod": { "type": "string", "nullable": true },
-          "subTotal": { "oneOf": [ { "type": "number" }, { "type": "string" } ], "nullable": true },
-          "discount": { "oneOf": [ { "type": "number" }, { "type": "string" } ], "nullable": true },
-          "surcharge": { "oneOf": [ { "type": "number" }, { "type": "string" } ], "nullable": true },
-          "total": { "oneOf": [ { "type": "number" }, { "type": "string" } ], "nullable": true },
-          "cashRegisterId": { "oneOf": [ { "type": "string" }, { "type": "integer" } ], "nullable": true },
-        "userId": { "type": "string", "nullable": true },
+          "displayCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "table": {
+            "type": "string",
+            "nullable": true
+          },
+          "customer": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "confirmedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "ticketNumber": {
+            "type": "integer",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "nullable": true
+          },
+          "paymentMethod": {
+            "type": "string",
+            "nullable": true
+          },
+          "subTotal": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "discount": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "surcharge": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true
+          },
+          "cashRegisterId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "nullable": true
+          },
+          "userId": {
+            "type": "string",
+            "nullable": true
+          },
           "orderItems": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/OrderItemIn" }
+            "items": {
+              "$ref": "#/components/schemas/OrderItemIn"
+            }
           }
         }
       },
       "OrderItemIn": {
         "type": "object",
-        "required": ["id", "quantity", "foodId"],
+        "required": [
+          "id",
+          "quantity",
+          "foodId"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "quantity": { "type": "number" },
-          "foodId": { "type": "string" },
-          "notes": { "type": "string", "nullable": true },
-          "surcharge": { "oneOf": [ { "type": "number" }, { "type": "string" } ], "nullable": true },
-          "orderId": { "oneOf": [ { "type": "string" }, { "type": "integer" } ], "nullable": true }
+          "id": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          },
+          "orderId": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "foodId": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true
+          },
+          "unitPrice": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true,
+            "description": "Prezzo totale della riga (prezzo base già moltiplicato per quantity)."
+          },
+          "unitSurcharge": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true,
+            "description": "Supplemento totale della riga (supplemento già moltiplicato per quantity)."
+          },
+          "total": {
+            "oneOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "nullable": true,
+            "description": "Totale riga complessivo (unitPrice + unitSurcharge)."
+          }
         }
-      },
+      }
+
       "CategorizedItem": {
         "type": "object",
         "properties": {
@@ -161,8 +316,12 @@
         "properties": {
           "id": {
             "oneOf": [
-              { "type": "string" },
-              { "type": "integer" }
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
             ],
             "description": "Identifier of the category"
           },
@@ -181,11 +340,17 @@
             "default": 0
           },
           "image": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "URL of the category image or null if none"
           },
           "printerId": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Identifier of the printer associated with this category"
           }
         }

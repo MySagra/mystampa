@@ -158,7 +158,7 @@ export function buildKitchenReceipt(
  */
 export function buildCashReceipt(
   order: IncomingOrder,
-  lines: CashReceiptLine[]
+  lines: CashReceiptLine[],
 ): string {
   const RECEIPT_W = 48; // <-- 48 (80mm) / 42 o 32 (58mm). Dimmi la tua e lo settiamo perfetto.
 
@@ -167,8 +167,10 @@ export function buildCashReceipt(
   const repeat = (ch: string, n: number) => ch.repeat(Math.max(0, n));
   const line = (ch = "-") => repeat(ch, RECEIPT_W);
 
-  const padRight = (s: string, w: number) => (s.length >= w ? s : s + repeat(" ", w - s.length));
-  const padLeft  = (s: string, w: number) => (s.length >= w ? s : repeat(" ", w - s.length) + s);
+  const padRight = (s: string, w: number) =>
+    s.length >= w ? s : s + repeat(" ", w - s.length);
+  const padLeft = (s: string, w: number) =>
+    s.length >= w ? s : repeat(" ", w - s.length) + s;
 
   // Taglia a lunghezza (semplice; se hai caratteri strani/emoji si complica)
   const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
@@ -197,10 +199,12 @@ export function buildCashReceipt(
   // =========================
   //out.push(repeat("\n", 3).trimEnd()); // top padding
   out.push(cut("===== SCONTRINO FISCALE =====", RECEIPT_W));
-  if (trimStr(order.displayCode)) out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+  if (trimStr(order.displayCode))
+    out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
   out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
-  if (trimStr(order.confirmedAt)) out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+  if (trimStr(order.confirmedAt))
+    out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
   out.push(line("-"));
 
   // =========================
@@ -211,33 +215,31 @@ export function buildCashReceipt(
 
   for (const l of lines) {
     const qty = l.quantity ?? 1;
-    const name = trimStr(l.foodName) || "FOOD";
+    const name = trimStr(l.foodName) || "FOOD NAME NOT FOUND";
 
-    const rowTotal = qty * (l.unitPrice ?? 0);
-    subtotalCalc += rowTotal;
+    const unitBase = toNumber(l.unitPrice ?? 0);
+    const unitExtra = toNumber(l.surcharge ?? 0);
 
-    // Riga principale: "2x Panino ..."  |  "12,00€"
+    const rowBase = unitBase * qty;
+    const rowExtra = unitExtra * qty;
+    const rowTotal = rowBase + rowExtra;
+
+    subtotalCalc += rowBase;
+    surchargeSum += rowExtra;
+
+    // Riga principale con totale riga
     out.push(lr(`${qty}x ${name}`, eurCol(rowTotal)));
 
     const notePresent = !!(l.notes && trimStr(l.notes));
-    const surchargeVal = l.surcharge ? toNumber(l.surcharge) : 0;
-
-    // Riga secondaria (se note o surcharge)
-    if (notePresent || surchargeVal > 0) {
-      surchargeSum += surchargeVal;
-
-      if (notePresent) {
-        // Nota su una riga (senza prezzo) usando tutta la larghezza
-        out.push(cut(`   NOTE: ${trimStr(l.notes!)}`, RECEIPT_W));
-      }
-
-      if (surchargeVal > 0) {
-        // Extra prezzo allineato a destra
-        out.push(lr(`   EXTRA`, eurCol(surchargeVal)));
-      }
+    if (notePresent) {
+      out.push(cut(`   NOTE: ${trimStr(l.notes!)}`, RECEIPT_W));
     }
 
-    out.push(""); // riga vuota tra item (spazio verticale)
+    if (rowExtra > 0) {
+      out.push(lr(`   EXTRA`, eurCol(rowExtra)));
+    }
+
+    out.push("");
   }
 
   out.push(line("-"));

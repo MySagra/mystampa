@@ -167,17 +167,12 @@ export interface OrderItemIn {
   quantity: number;
   foodId: string;
   notes: string | null;
-  /**
-   * Optional surcharge applied to this specific item. This value
-   * represents an additional price (e.g. supplement) and should be
-   * added to the base price of the food when calculating totals.
-   */
-  surcharge?: number | string | null;
-  /**
-   * Optional order identifier associated with the item. When present,
-   * it links the item back to its parent order.
-   */
   orderId?: IdLike;
+  
+  // NUOVI CAMPI
+  unitPrice?: number | string | null;       // es. "15.5"
+  unitSurcharge?: number | string | null;   // es. "0.75"
+  total?: number | string | null;           // es. "32.5"
 }
 
 /**

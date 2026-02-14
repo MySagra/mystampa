@@ -147,11 +147,16 @@ router.post("/", async (req: PrintRequest, res: Response) => {
       arr.push({ foodName, quantity: qty, notes });
       kitchenByPrinterId.set(printerId, arr);
     }
-    const unitPrice = toNumber(food?.price);
-    const surcharge =
-      it.surcharge !== undefined && it.surcharge !== null
-        ? toNumber(it.surcharge)
-        : null;
+const unitPrice =
+  it.unitPrice !== undefined && it.unitPrice !== null
+    ? toNumber(it.unitPrice)
+    : toNumber(food?.price); // fallback se manca
+
+const surcharge =
+  it.unitSurcharge !== undefined && it.unitSurcharge !== null
+    ? toNumber(it.unitSurcharge)
+    : 0; // default 0
+
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
   }
 
