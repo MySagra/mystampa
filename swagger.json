@@ -295,8 +295,7 @@
             "description": "Totale riga complessivo (unitPrice + unitSurcharge)."
           }
         }
-      }
-
+      },
       "CategorizedItem": {
         "type": "object",
         "properties": {

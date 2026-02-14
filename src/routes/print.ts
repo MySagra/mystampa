@@ -2,7 +2,7 @@
  * Route handler for the `/print` endpoint.
  *
  * This implementation reflects the updated business logic for the
- * `mycassa` service. Instead of using preloaded categories to find
+ * `mystampa` service. Instead of using preloaded categories to find
  * printers, it queries the external API on‑the‑fly for each food
  * item to determine its associated kitchen printer. It also looks
  * up the cash register printer via a dedicated API call. Items are

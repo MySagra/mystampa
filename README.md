@@ -1,4 +1,4 @@
-# Mycassa – Servizio di stampa avanzato
+# mystampa – Servizio di stampa avanzato
 
 Questa applicazione Node.js/TypeScript implementa un servizio REST che si
 autentica presso un'API esterna, recupera l'elenco delle stampanti di rete e
@@ -206,6 +206,23 @@ illustrato da W3Schools, per utilizzarla è necessario installare il pacchetto
 del programma【842935397317975†L953-L985】. In questo progetto `dotenv` viene utilizzato in
 `src/index.js` per leggere le variabili `EXTERNAL_BASE_URL`, `ADMIN_USERNAME`,
 `ADMIN_PASSWORD` e `PORT`.
+
+## Modalità SSE (Server‑Sent Events)
+
+Oltre alla modalità REST tradizionale, **mystampa** può operare in modalità
+SSE. Quando la variabile d'ambiente `USE_SSE` è impostata a `true` o
+`sse`, l'applicazione si connette in background all'endpoint
+specificato in `SSE_URL` (ad esempio `http://localhost:4300/events/printer`)
+utilizzando la libreria `@microsoft/fetch-event-source`. Il flusso SSE
+eroga una sequenza di messaggi testuali: ogni messaggio deve
+contenere un JSON equivalente a un oggetto `IncomingOrder`. Appena
+ricevuto, il messaggio viene inoltrato al route interno `POST /print`
+affinché il servizio generi gli scontrini di cucina e cassa con la
+stessa logica descritta sopra. Questa modalità permette di integrare
+facilmente mystampa con un backend che invia gli ordini in tempo reale,
+eliminando la necessità che i client esterni conoscano o invochino
+l'endpoint `/print`. Per tornare alla modalità REST, basta impostare
+`USE_SSE` a `false` (o rimuoverla) nel file `.env`.
 
 ## Note finali
 

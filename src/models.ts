@@ -146,7 +146,7 @@ export class PrintJob {
 }
 
 /**
- * Types and interfaces for the updated `mycassa` service.
+ * Types and interfaces for the updated `mystampa` service.
  *
  * The IncomingOrder type matches the structure of the JSON payload
  * received by the `/print` endpoint. It reflects the order and

@@ -1,5 +1,5 @@
 /**
- * Printer utilities for the `mycassa` service.
+ * Printer utilities for the `mystampa` service.
  *
  * This module provides helper functions and classes used to
  * communicate with network printers and to build formatted
