@@ -13,7 +13,7 @@
  */
 
 import { Router, Request, Response } from "express";
-import axios from "axios";
+import axiosInstance from "../utils/axiosInstance";
 import {
   IncomingOrder,
   FoodFromApi,
@@ -112,7 +112,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     if (!id) return null;
     if (foodCache.has(id)) return foodCache.get(id)!;
     try {
-      const r = await axios.get<FoodFromApi>(
+      const r = await axiosInstance.get<FoodFromApi>(
         `${EXTERNAL_BASE_URL}/v1/foods/${id}`,
         {
           headers: {
@@ -147,15 +147,15 @@ router.post("/", async (req: PrintRequest, res: Response) => {
       arr.push({ foodName, quantity: qty, notes });
       kitchenByPrinterId.set(printerId, arr);
     }
-const unitPrice =
-  it.unitPrice !== undefined && it.unitPrice !== null
-    ? toNumber(it.unitPrice)
-    : toNumber(food?.price); // fallback se manca
+    const unitPrice =
+      it.unitPrice !== undefined && it.unitPrice !== null
+        ? toNumber(it.unitPrice)
+        : toNumber(food?.price); // fallback se manca
 
-const surcharge =
-  it.unitSurcharge !== undefined && it.unitSurcharge !== null
-    ? toNumber(it.unitSurcharge)
-    : 0; // default 0
+    const surcharge =
+      it.unitSurcharge !== undefined && it.unitSurcharge !== null
+        ? toNumber(it.unitSurcharge)
+        : 0; // default 0
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
   }
@@ -170,7 +170,7 @@ const surcharge =
   if (order.cashRegisterId !== null && order.cashRegisterId !== undefined) {
     const crId = trimStr(order.cashRegisterId);
     try {
-      const r = await axios.get<CashRegisterFromApi>(
+      const r = await axiosInstance.get<CashRegisterFromApi>(
         `${EXTERNAL_BASE_URL}/v1/cash-registers/${crId}?include=printer`,
         {
           headers: {
@@ -184,10 +184,10 @@ const surcharge =
         trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
       cashRegisterPrinterEmbedded = r.data.defaultPrinter
         ? {
-            id: r.data.defaultPrinter.id,
-            ip: r.data.defaultPrinter.ip,
-            port: r.data.defaultPrinter.port,
-          }
+          id: r.data.defaultPrinter.id,
+          ip: r.data.defaultPrinter.ip,
+          port: r.data.defaultPrinter.port,
+        }
         : null;
     } catch (e) {
       console.error("cash-register fetch failed", crId, e);

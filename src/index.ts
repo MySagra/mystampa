@@ -9,7 +9,7 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import axios from 'axios';
+import axiosInstance from './utils/axiosInstance';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import path from 'path';
@@ -90,7 +90,7 @@ async function startSSE(): Promise<void> {
           console.log('SSE received event:', payload);
           // Forward to the local /print route for processing. This
           // reuses the existing business logic rather than duplicating it.
-          await axios.post(
+          await axiosInstance.post(
             `http://localhost:${localPort}/print`,
             payload,
             { headers: { 'Content-Type': 'application/json' } },
@@ -129,7 +129,7 @@ declare global {
  */
 async function login(): Promise<LoginResponse | null> {
   try {
-    const resp = await axios.post<LoginResponse>(`${EXTERNAL_BASE_URL}/auth/login`, {
+    const resp = await axiosInstance.post<LoginResponse>(`${EXTERNAL_BASE_URL}/auth/login`, {
       username: ADMIN_USERNAME,
       password: ADMIN_PASSWORD,
     }, {
@@ -150,7 +150,7 @@ async function login(): Promise<LoginResponse | null> {
  */
 async function fetchCategories(token: string): Promise<Category[]> {
   try {
-    const resp = await axios.get(`${EXTERNAL_BASE_URL}/v1/categories?available=true`, {
+    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/categories?available=true`, {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
@@ -169,7 +169,7 @@ async function fetchCategories(token: string): Promise<Category[]> {
  */
 async function fetchPrinters(token: string): Promise<Printer[]> {
   try {
-    const resp = await axios.get(`${EXTERNAL_BASE_URL}/v1/printers`, {
+    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/printers`, {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
