@@ -20,10 +20,12 @@ import {
   CashRegisterFromApi,
   Printer,
 } from "../models";
+import { printQueue } from "../utils/printQueue";
 import {
   buildKitchenReceipt,
   buildCashReceipt,
   sendToPrinter,
+  getPrinterStatus,
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
@@ -35,6 +37,31 @@ const router = Router();
 // within the module scope so values persist across requests while the
 // server is running.
 const progressCounters: { [printerId: string]: number } = {};
+
+/**
+ * Safe print helper: checks paper status before printing.
+ * If paper is out or any error occurs, the job is added to the print queue.
+ */
+async function safePrint(printerId: string, ip: string, port: number, data: string) {
+  try {
+    const status = await getPrinterStatus(ip, port);
+    if (status === "OK" || status === "CARTA_QUASI_FINITA") {
+      try {
+        await sendToPrinter(ip, port, data);
+        console.log(`[SafePrint] Printed successfully to ${printerId}`);
+      } catch (printErr) {
+        console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
+        printQueue.add(printerId, ip, port, data);
+      }
+    } else {
+      console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
+      printQueue.add(printerId, ip, port, data);
+    }
+  } catch (statusErr) {
+    console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue:`, statusErr);
+    printQueue.add(printerId, ip, port, data);
+  }
+}
 
 /**
  * Extend Express Request to optionally include the cached list of
@@ -236,11 +263,8 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     // Increment progress counter
     progressCounters[printerId] = prog + 1;
     if (pr) {
-      try {
-        await sendToPrinter(pr.ip, pr.port, receipt);
-      } catch (e) {
-        console.error("kitchen print failed", printerId, e);
-      }
+      // Use safePrint logic
+      await safePrint(printerId, pr.ip, pr.port, receipt);
     } else {
       console.log("NO PRINTER for kitchen printerId=", printerId);
       console.log(receipt);
@@ -252,11 +276,8 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = buildCashReceipt(order, cashLines);
     if (pr) {
-      try {
-        await sendToPrinter(pr.ip, pr.port, receipt);
-      } catch (e) {
-        console.error("cash print failed", cashRegisterPrinterId, e);
-      }
+      // Use safePrint logic
+      await safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt);
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);
@@ -265,7 +286,6 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     console.log("NO cashRegister printerId found");
     console.log(buildCashReceipt(order, cashLines));
   }
-
   return res.json({
     ok: true,
     kitchenPrinters: Array.from(kitchenByPrinterId.keys()),

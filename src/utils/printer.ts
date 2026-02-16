@@ -313,3 +313,54 @@ export async function sendToPrinter(
     client.on("error", reject);
   });
 }
+
+/**
+ * Check the printer status (specifically paper status) before printing.
+ * Returns "OK", "CARTA_QUASI_FINITA", or "CARTA_FINITA".
+ * Throws error if connection fails or timeout.
+ */
+export async function getPrinterStatus(ip: string, port: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const client = new net.Socket();
+
+    // Timeout dopo 3 secondi se la stampante non risponde
+    const timeout = setTimeout(() => {
+      client.destroy();
+      reject(new Error("Timeout: la stampante non risponde"));
+    }, 3000);
+
+    const onError = (err: Error) => {
+      clearTimeout(timeout);
+      client.destroy();
+      reject(err);
+    };
+
+    client.on("error", onError);
+
+    client.connect(port, ip, () => {
+      // Chiediamo lo stato del rotolo di carta (DLE EOT 4)
+      const queryStatus = Buffer.from([0x10, 0x04, 0x04]);
+      client.write(queryStatus);
+    });
+
+    client.on("data", (data) => {
+      clearTimeout(timeout);
+      const statusByte = data[0];
+
+      // Analisi del byte di risposta (Standard ESC/POS)
+      // Bit 5 e 6 indicano se la carta sta finendo o è finita
+      const paperEnded = (statusByte & 0x60) === 0x60;
+      const paperLow = (statusByte & 0x0C) === 0x0C;
+
+      client.end();
+      client.removeListener("error", onError); // Cleanup listener
+
+      console.log("Carta finita: ", paperEnded);
+      console.log("Carta quasi finita: ", paperLow);
+
+      if (paperEnded) resolve("CARTA_FINITA");
+      else if (paperLow) resolve("CARTA_QUASI_FINITA");
+      else resolve("OK");
+    });
+  });
+}
