@@ -26,7 +26,7 @@ export class Category {
     public position: number = 0,
     public image: string | null = null,
     public printerId: string | null = null
-  ) {}
+  ) { }
 
   /**
    * Create a Category instance from a plain object (API response or
@@ -51,7 +51,7 @@ export class Category {
  * the `categories` table. It simply extends {@link Category} so
  * all behaviour is inherited.
  */
-export class CategoryEntity extends Category {}
+export class CategoryEntity extends Category { }
 
 export class Printer {
   constructor(
@@ -61,7 +61,7 @@ export class Printer {
     public port: number,
     public description: string | null = null,
     public status: string = 'UNKNOWN'
-  ) {}
+  ) { }
 
   /**
    * Create a Printer instance from a plain object. The port property
@@ -100,7 +100,7 @@ export class Printer {
  * {@link Printer} class so all parsing logic and properties are
  * identical.
  */
-export class PrinterEntity extends Printer {}
+export class PrinterEntity extends Printer { }
 
 export class Food {
   constructor(
@@ -108,7 +108,7 @@ export class Food {
     public name: string,
     public description: string | null = null,
     public price: string
-  ) {}
+  ) { }
 }
 
 export class OrderItem {
@@ -117,14 +117,14 @@ export class OrderItem {
     public quantity: number,
     public notes: string | null = null,
     public food: Food
-  ) {}
+  ) { }
 }
 
 export class CategorizedItems {
   constructor(
     public category: { id: string | number; name: string },
     public items: OrderItem[]
-  ) {}
+  ) { }
 }
 
 export class PrintJob {
@@ -142,7 +142,7 @@ export class PrintJob {
     public customer: string | null = null,
     public confirmedAt: string | null = null,
     public categorizedItems: CategorizedItems[]
-  ) {}
+  ) { }
 }
 
 /**
@@ -165,14 +165,20 @@ export type IdLike = string | number;
 export interface OrderItemIn {
   id: string;
   quantity: number;
-  foodId: string;
+  foodId?: string;
   notes: string | null;
   orderId?: IdLike;
-  
+
   // NUOVI CAMPI
   unitPrice?: number | string | null;       // es. "15.5"
   unitSurcharge?: number | string | null;   // es. "0.75"
   total?: number | string | null;           // es. "32.5"
+
+  food?: {
+    id: string;
+    name: string;
+    printerId?: string | null;
+  };
 }
 
 /**
@@ -255,7 +261,7 @@ export class FoodEntity {
     public available: boolean,
     public categoryId: string | null,
     public printerId: string | null
-  ) {}
+  ) { }
 
   /**
    * Create a FoodEntity from a plain API response or database row.
@@ -287,7 +293,7 @@ export class CashRegister {
     public enabled: boolean,
     public defaultPrinterId: string | null = null,
     public printer?: Printer | null
-  ) {}
+  ) { }
 
   /**
    * Create a CashRegister from a plain API response or database row.
@@ -310,4 +316,4 @@ export class CashRegister {
  * than API representations. It inherits from {@link CashRegister}
  * so all behaviour and parsing logic are shared.
  */
-export class CashRegisterEntity extends CashRegister {}
+export class CashRegisterEntity extends CashRegister { }

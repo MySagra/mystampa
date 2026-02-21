@@ -19,7 +19,10 @@
  */
 
 import net from 'net';
+import fs from 'fs';
+import path from 'path';
 import { IncomingOrder } from '../models';
+import { loadImageAsEscPos } from './image';
 
 /**
  * Types representing individual lines that will appear on receipts.
@@ -82,6 +85,51 @@ function blank(n = 6): string {
 }
 
 /**
+ * Word wraps a string to a specific maximum width.
+ * Returns an array of strings, each at most `maxWidth` characters.
+ * It attempts to break the string at word boundaries.
+ */
+function wrapText(text: string, maxWidth: number, indent: string = ''): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    if ((currentLine + word).length > maxWidth) {
+      if (currentLine.length > 0) {
+        lines.push(currentLine.trimEnd());
+      }
+
+      const prefix = lines.length > 0 ? indent : '';
+      currentLine = prefix;
+
+      if ((currentLine + word).length > maxWidth) {
+        // A single word is longer than the max width, we have to hard split it
+        let tempWord = word;
+        while ((currentLine + tempWord).length > maxWidth) {
+          const cutLen = Math.max(1, maxWidth - currentLine.length);
+          lines.push(currentLine + tempWord.substring(0, cutLen));
+          tempWord = tempWord.substring(cutLen);
+          currentLine = indent;
+        }
+        currentLine += tempWord + ' ';
+      } else {
+        currentLine += word + ' ';
+      }
+    } else {
+      currentLine += word + ' ';
+    }
+  }
+
+  // Se l'ultima riga ha solo l'indentazione (niente testo vero), non la pushiamo
+  if (currentLine.trim().length > 0) {
+    lines.push(currentLine.trimEnd());
+  }
+
+  return lines;
+}
+
+/**
  * Build the content of a kitchen receipt. This receipt lists items
  * destined for a kitchen printer grouped by printer and does not
  * include prices. It includes order metadata such as table,
@@ -93,7 +141,7 @@ export function buildKitchenReceipt(
   lines: KitchenReceiptLine[],
   progress: number
 ): string {
-  const RECEIPT_W = 48;
+  const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
   const out: string[] = [];
 
@@ -123,7 +171,24 @@ export function buildKitchenReceipt(
 
   // INFO PICCOLE (separate)
   if (trimStr(order.displayCode)) out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
-  if (trimStr(order.confirmedAt)) out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+
+  if (trimStr(order.confirmedAt)) {
+    try {
+      const d = new Date(order.confirmedAt as string);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        const hrs = String(d.getHours()).padStart(2, '0');
+        const mins = String(d.getMinutes()).padStart(2, '0');
+        out.push(cut(`ORA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
+      } else {
+        out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+      }
+    } catch {
+      out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+    }
+  }
 
   out.push(line("-"));
 
@@ -134,10 +199,20 @@ export function buildKitchenReceipt(
     const qty = l.quantity ?? 1;
     const name = trimStr(l.foodName) || "FOOD";
 
-    out.push(cut(`${qty}x ${name}`, RECEIPT_W));
+    const namePrefix = `${qty}x `;
+    const indent = " ".repeat(namePrefix.length);
+    const wrappedName = wrapText(namePrefix + name, RECEIPT_W, indent);
+
+    for (const wrapLine of wrappedName) {
+      out.push(wrapLine);
+    }
 
     if (l.notes && trimStr(l.notes)) {
-      out.push(cut(`  NOTE: ${trimStr(l.notes)}`, RECEIPT_W));
+      const noteIndent = indent + "      "; // 6 chars for 'NOTE: '
+      const wrappedNotes = wrapText(`${indent}NOTE: ${trimStr(l.notes)}`, RECEIPT_W, noteIndent);
+      for (const wrapNote of wrappedNotes) {
+        out.push(wrapNote);
+      }
     }
 
     out.push("");
@@ -156,12 +231,13 @@ export function buildKitchenReceipt(
  * header information. Prices are assumed to be numbers and may
  * originate from strings in the API.
  */
-export function buildCashReceipt(
+export async function buildCashReceipt(
   order: IncomingOrder,
   lines: CashReceiptLine[],
-): string {
-  const RECEIPT_W = 48; // <-- 48 (80mm) / 42 o 32 (58mm). Dimmi la tua e lo settiamo perfetto.
+): Promise<(string | Buffer)[]> {
+  const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
+  const parts: (string | Buffer)[] = [];
   const out: string[] = [];
 
   const repeat = (ch: string, n: number) => ch.repeat(Math.max(0, n));
@@ -177,7 +253,7 @@ export function buildCashReceipt(
 
   // Riga con testo a sinistra e prezzo a destra, sempre allineato
   const lr = (left: string, right: string) => {
-    left = trimStr(left);
+    left = left === null || left === undefined ? '' : String(left).trimEnd();
     right = trimStr(right);
     const space = 1;
     const leftW = RECEIPT_W - right.length - space;
@@ -197,14 +273,29 @@ export function buildCashReceipt(
   // =========================
   // HEADER
   // =========================
-  //out.push(repeat("\n", 3).trimEnd()); // top padding
-  out.push(cut("===== SCONTRINO FISCALE =====", RECEIPT_W));
   if (trimStr(order.displayCode))
     out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
   out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
-  if (trimStr(order.confirmedAt))
-    out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+
+  if (trimStr(order.confirmedAt)) {
+    try {
+      const d = new Date(order.confirmedAt as string);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        const hrs = String(d.getHours()).padStart(2, '0');
+        const mins = String(d.getMinutes()).padStart(2, '0');
+        out.push(cut(`ORA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
+      } else {
+        out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+      }
+    } catch {
+      out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+    }
+  }
+
   out.push(line("-"));
 
   // =========================
@@ -228,15 +319,34 @@ export function buildCashReceipt(
     surchargeSum += rowExtra;
 
     // Riga principale con totale riga
-    out.push(lr(`${qty}x ${name}`, eurCol(rowTotal)));
+    // Wrappiamo il testo di sinistra in modo da evitare che sovrascriva spazi 
+    // Risolviamo il prezzo a destra sempre sulla prima riga
+    const priceStr = eurCol(rowTotal);
+    const availableWidthForName = RECEIPT_W - priceStr.length - 1; // 1 per lo spazio minimo
+
+    const namePrefix = `${qty}x `;
+    const indent = " ".repeat(namePrefix.length);
+    const wrappedNameLines = wrapText(namePrefix + name, availableWidthForName, indent);
+
+    // Prima riga con il prezzo
+    out.push(lr(wrappedNameLines[0] || "", priceStr));
+
+    // Righe successive del nome senza prezzo
+    for (let i = 1; i < wrappedNameLines.length; i++) {
+      out.push(cut(wrappedNameLines[i], RECEIPT_W));
+    }
 
     const notePresent = !!(l.notes && trimStr(l.notes));
     if (notePresent) {
-      out.push(cut(`   NOTE: ${trimStr(l.notes!)}`, RECEIPT_W));
+      const noteIndent = indent + "      "; // 6 chars for 'NOTE: '
+      const wrappedNotes = wrapText(`${indent}NOTE: ${trimStr(l.notes!)}`, RECEIPT_W, noteIndent);
+      for (const wrapNote of wrappedNotes) {
+        out.push(wrapNote);
+      }
     }
 
     if (rowExtra > 0) {
-      out.push(lr(`   EXTRA`, eurCol(rowExtra)));
+      out.push(lr(`${indent}EXTRA`, eurCol(rowExtra)));
     }
 
     out.push("");
@@ -259,10 +369,51 @@ export function buildCashReceipt(
   out.push(lr("TOTALE", eurCol(totalAfterDiscount)));
   out.push(line("="));
 
-  // spazio sotto
-  out.push(repeat("\n", 12).trimEnd());
+  // Check for logo
+  const possibleLogos = ['logo.png', 'logo.jpg', 'logo.jpeg'];
+  for (const lo of possibleLogos) {
+    let logoPath = path.join(process.cwd(), 'assets', lo);
+    if (!fs.existsSync(logoPath)) {
+      logoPath = path.join(process.cwd(), 'default-assets', lo);
+    }
 
-  return out.join("\n");
+    if (fs.existsSync(logoPath)) {
+      const logoBuf = await loadImageAsEscPos(logoPath, {
+        paperWidth: 576, // 80mm paper requires 576 dots width for centering
+        exactWidth: 210 // 30% smaller than 300
+      });
+      if (logoBuf.length > 0) {
+        parts.push(logoBuf);
+      }
+      break;
+    }
+  }
+
+  // Push the main text with padding above to separate from the logo
+  // And an extra \n at the end to add a blank line before the footer
+  parts.push("\n\n\n" + out.join("\n") + "\n\n");
+
+  // FOOTER (mysagra logo + mysagra.com)
+  let mysagraPath = path.join(process.cwd(), 'assets', 'mysagralogo.png');
+  if (!fs.existsSync(mysagraPath)) {
+    mysagraPath = path.join(process.cwd(), 'default-assets', 'mysagralogo.png');
+  }
+
+  if (fs.existsSync(mysagraPath)) {
+    const footerBuf = await loadImageAsEscPos(mysagraPath, {
+      paperWidth: 576, // 80mm paper requires 576 dots width for centering
+      exactHeight: 24, // height of a text line
+      inlineText: "mysagra.com"
+    });
+    if (footerBuf.length > 0) {
+      parts.push(footerBuf);
+    }
+  }
+
+  // spazio sotto (restored to original behavior which was basically 0 because of trimEnd)
+  parts.push(repeat("\n", 12).trimEnd());
+
+  return parts;
 }
 
 
@@ -277,7 +428,7 @@ import iconv from "iconv-lite";
 export async function sendToPrinter(
   ip: string,
   port: number,
-  data: string
+  data: (string | Buffer)[] | string | Buffer
 ): Promise<void> {
 
   const ipClean = trimStr(ip);
@@ -290,21 +441,30 @@ export async function sendToPrinter(
   const ESC = "\x1B";
 
   // Selezione codepage EURO (CP858)
-  const SELECT_CP858 = ESC + "t" + "\x13";
+  const SELECT_CP858 = Buffer.from(ESC + "t" + "\x13", "ascii");
 
   // Feed fisico + taglio
-  const FEED_AND_CUT =
-    ESC + "d" + "\x06" +   // feed reale (6 righe)
-    ESC + "i";             // cut completo
+  const FEED_AND_CUT = Buffer.from(ESC + "d" + "\x06" + ESC + "i", "ascii"); // Restored feed to 6 exactly as original
 
-  const payload = SELECT_CP858 + data + FEED_AND_CUT;
-  const bytes = iconv.encode(payload, "cp858");
+  const normalized = Array.isArray(data) ? data : [data];
+  const buffers: Buffer[] = [SELECT_CP858];
+
+  for (const item of normalized) {
+    if (Buffer.isBuffer(item)) {
+      buffers.push(item);
+    } else {
+      buffers.push(iconv.encode(item, "cp858"));
+    }
+  }
+
+  buffers.push(FEED_AND_CUT);
+  const payload = Buffer.concat(buffers);
 
   return new Promise((resolve, reject) => {
     const client = new net.Socket();
 
     client.connect(portClean, ipClean, () => {
-      client.write(bytes, () => {
+      client.write(payload, () => {
         client.end();
         resolve();
       });

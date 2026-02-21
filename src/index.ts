@@ -14,7 +14,7 @@ import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import path from 'path';
 import dotenv from 'dotenv';
-import { Category, Printer, PrintJob, CategorizedItems, OrderItem, Food } from './models';
+import { Printer, PrintJob, CategorizedItems, OrderItem, Food } from './models';
 
 // Import the SSE client. This library allows connection to Server‑Sent
 // Events endpoints from Node.js. When USE_SSE is enabled via env
@@ -44,7 +44,6 @@ interface LoginResponse {
 
 // In‑memory caches
 let authInfo: LoginResponse | null = null;
-let categories: Category[] = [];
 let printers: Printer[] = [];
 
 /**
@@ -118,7 +117,6 @@ async function startSSE(): Promise<void> {
 declare global {
   namespace Express {
     interface Request {
-      categories?: Category[];
       printers?: Printer[];
     }
   }
@@ -145,24 +143,7 @@ async function login(): Promise<LoginResponse | null> {
   }
 }
 
-/**
- * Fetch available categories using the provided token.
- */
-async function fetchCategories(token: string): Promise<Category[]> {
-  try {
-    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/categories?available=true`, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-    });
-    const list: Category[] = (resp.data as any[]).map(Category.fromJson);
-    return list;
-  } catch (err: any) {
-    console.error('Fetching categories failed:', err.message);
-    return [];
-  }
-}
+
 
 /**
  * Fetch printers list using the provided token.
@@ -184,22 +165,32 @@ async function fetchPrinters(token: string): Promise<Printer[]> {
 }
 
 /**
- * Initialize by logging in and fetching categories and printers. The data
+ * Initialize by logging in and fetching printers. The data
  * is stored in module‑level variables and logged to console.
  */
 async function initialize(): Promise<void> {
   authInfo = await login();
   if (!authInfo) {
-    console.error('Unable to authenticate; categories and printers will not be loaded.');
+    console.error('Unable to authenticate; printers will not be loaded.');
     return;
   }
   const token = authInfo.accessToken;
   // Expose token on the global object for routes to reuse
   (global as any).__AUTH_TOKEN = token;
-  categories = await fetchCategories(token);
+
+  // Initial fetch
   printers = await fetchPrinters(token);
-  console.log('Initialization complete. Categories:', JSON.stringify(categories, null, 2));
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
+
+  // Refresh printers every 2 minutes (120000 ms)
+  setInterval(async () => {
+    try {
+      printers = await fetchPrinters(token);
+      console.log('Printers updated via polling.');
+    } catch (e) {
+      console.error('Failed to update printers:', e);
+    }
+  }, 120000);
 
   // If SSE mode is enabled, start listening for events. This
   // invocation is non‑blocking: fetchEventSource will attempt to
@@ -224,9 +215,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Middleware to attach cached categories and printers to the request
+// Middleware to attach cached printers to the request
 app.use((req: Request, res: Response, next: NextFunction) => {
-  req.categories = categories;
   req.printers = printers;
   next();
 });

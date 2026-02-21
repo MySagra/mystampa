@@ -12,6 +12,8 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=${PORT}
+    volumes:
+      - ./assets:/app/assets
     networks:
       - mysagra_default
 

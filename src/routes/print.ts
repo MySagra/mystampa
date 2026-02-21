@@ -42,7 +42,7 @@ const progressCounters: { [printerId: string]: number } = {};
  * Safe print helper: checks paper status before printing.
  * If paper is out or any error occurs, the job is added to the print queue.
  */
-async function safePrint(printerId: string, ip: string, port: number, data: string) {
+async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer) {
   try {
     const status = await getPrinterStatus(ip, port);
     if (status === "OK" || status === "CARTA_QUASI_FINITA") {
@@ -132,43 +132,18 @@ router.post("/", async (req: PrintRequest, res: Response) => {
       .json({ error: "Missing auth token (login not completed)" });
   }
 
-  // Local caches for food lookups to avoid duplicate requests within a single print job
-  const foodCache = new Map<string, FoodFromApi>();
-  async function fetchFood(foodId: string): Promise<FoodFromApi | null> {
-    const id = trimStr(foodId);
-    if (!id) return null;
-    if (foodCache.has(id)) return foodCache.get(id)!;
-    try {
-      const r = await axiosInstance.get<FoodFromApi>(
-        `${EXTERNAL_BASE_URL}/v1/foods/${id}`,
-        {
-          headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        },
-      );
-      foodCache.set(id, r.data);
-      return r.data;
-    } catch (e) {
-      console.error("food fetch failed", id, e);
-      return null;
-    }
-  }
-
   // Aggregation map for kitchen receipts keyed by printerId
   const kitchenByPrinterId = new Map<string, KitchenReceiptLine[]>();
   // Lines for the cash receipt (all items). Each entry includes the surcharge
   // field so that extra prices can be printed on the fiscal receipt.
   const cashLines: CashReceiptLine[] = [];
 
-  // Iterate all order items, fetch food details and group accordingly
+  // Iterate all order items and group accordingly
   for (const it of order.orderItems) {
-    const food = await fetchFood(it.foodId);
-    const foodName = food?.name ?? `FOOD(${it.foodId})`;
+    const foodName = it.food?.name ?? `FOOD(${it.id})`;
     const qty = it.quantity ?? 1;
     const notes = it.notes ?? null;
-    const printerId = trimStr(food?.printerId);
+    const printerId = trimStr(it.food?.printerId);
     if (printerId) {
       const arr = kitchenByPrinterId.get(printerId) ?? [];
       arr.push({ foodName, quantity: qty, notes });
@@ -177,7 +152,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     const unitPrice =
       it.unitPrice !== undefined && it.unitPrice !== null
         ? toNumber(it.unitPrice)
-        : toNumber(food?.price); // fallback se manca
+        : 0; // fallback se manca
 
     const surcharge =
       it.unitSurcharge !== undefined && it.unitSurcharge !== null
@@ -274,7 +249,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
   // Print receipt for cash register printer
   if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
-    const receipt = buildCashReceipt(order, cashLines);
+    const receipt = await buildCashReceipt(order, cashLines);
     if (pr) {
       // Use safePrint logic
       await safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt);
@@ -284,7 +259,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     }
   } else {
     console.log("NO cashRegister printerId found");
-    console.log(buildCashReceipt(order, cashLines));
+    console.log(await buildCashReceipt(order, cashLines));
   }
   return res.json({
     ok: true,

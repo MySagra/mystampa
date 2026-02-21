@@ -6,7 +6,7 @@ interface PrintJob {
     printerId: string;
     ip: string;
     port: number;
-    data: string;
+    data: (string | Buffer)[] | string | Buffer;
     timestamp: number;
     attempts: number;
 }
@@ -21,7 +21,7 @@ class PrintQueueManager {
         this.start();
     }
 
-    public add(printerId: string, ip: string, port: number, data: string) {
+    public add(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer) {
         const job: PrintJob = {
             id: Math.random().toString(36).substring(7),
             printerId,
