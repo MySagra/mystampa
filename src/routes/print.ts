@@ -137,13 +137,46 @@ router.post("/", async (req: PrintRequest, res: Response) => {
   // Lines for the cash receipt (all items). Each entry includes the surcharge
   // field so that extra prices can be printed on the fiscal receipt.
   const cashLines: CashReceiptLine[] = [];
+  // Lines for single tickets to be appended to the cash receipt
+  const singleTickets: KitchenReceiptLine[] = [];
+
+  // Fetch single ticket categories config
+  const singleTicketCategoriesEnv = process.env.SINGLE_TICKET_CATEGORIES;
+  const targetCategoryIds = singleTicketCategoriesEnv
+    ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
+    : [];
+
+  const foodDetails = new Map<string, FoodFromApi>();
+  if (targetCategoryIds.length > 0) {
+    const foodIds = Array.from(new Set(order.orderItems.map(it => it.foodId || it.food?.id).filter(Boolean))) as string[];
+    await Promise.all(foodIds.map(async (fId) => {
+      try {
+        const r = await axiosInstance.get<FoodFromApi>(
+          `${EXTERNAL_BASE_URL}/v1/foods/${fId}`,
+          {
+            headers: {
+              Accept: "application/json",
+              Authorization: `Bearer ${token}`,
+            }
+          }
+        );
+        foodDetails.set(fId, r.data);
+      } catch (e) {
+        console.error(`[Print Route] Failed to fetch food details for ${fId}`, e);
+      }
+    }));
+  }
 
   // Iterate all order items and group accordingly
   for (const it of order.orderItems) {
-    const foodName = it.food?.name ?? `FOOD(${it.id})`;
+    const fId = it.foodId || it.food?.id;
+    const apiFood = fId ? foodDetails.get(fId) : undefined;
+
+    const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
     const qty = it.quantity ?? 1;
     const notes = it.notes ?? null;
-    const printerId = trimStr(it.food?.printerId);
+    const printerId = trimStr(apiFood?.printerId ?? it.food?.printerId);
+
     if (printerId) {
       const arr = kitchenByPrinterId.get(printerId) ?? [];
       arr.push({ foodName, quantity: qty, notes });
@@ -160,6 +193,11 @@ router.post("/", async (req: PrintRequest, res: Response) => {
         : 0; // default 0
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
+
+    const categoryId = apiFood?.categoryId ?? (it.food as any)?.categoryId;
+    if (categoryId && targetCategoryIds.includes(String(categoryId))) {
+      singleTickets.push({ foodName, quantity: qty, notes });
+    }
   }
 
   // Resolve the cash register printer. First fetch the cash register from the API
@@ -249,7 +287,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
   // Print receipt for cash register printer
   if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
-    const receipt = await buildCashReceipt(order, cashLines);
+    const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {
       // Use safePrint logic
       await safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt);
@@ -259,7 +297,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     }
   } else {
     console.log("NO cashRegister printerId found");
-    console.log(await buildCashReceipt(order, cashLines));
+    console.log(await buildCashReceipt(order, cashLines, singleTickets));
   }
   return res.json({
     ok: true,
