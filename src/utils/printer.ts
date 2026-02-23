@@ -273,10 +273,28 @@ export async function buildCashReceipt(
   // =========================
   // HEADER
   // =========================
+  const GS = "\x1D";
+  const ESC = "\x1B";
+  const TXT_NORMAL = GS + "!" + "\x00";
+  const TXT_BIG = GS + "!" + "\x11";
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
+
+  const orderNum = order.ticketNumber ?? order.id;
+  out.push(TXT_BIG + BOLD_ON + `Numero Ordine: ${orderNum}` + BOLD_OFF + TXT_NORMAL);
+
   if (trimStr(order.displayCode))
     out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
   out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
+
+  if (trimStr(order.paymentMethod)) {
+    let pmStr = trimStr(order.paymentMethod).toUpperCase();
+    if (pmStr === 'CASH') pmStr = 'CONTANTI';
+    else if (pmStr === 'CARD') pmStr = 'PAGAMENTO ELETTRONICO';
+
+    out.push(cut(`PAGAMENTO: ${pmStr}`, RECEIPT_W));
+  }
 
   if (trimStr(order.confirmedAt)) {
     try {
