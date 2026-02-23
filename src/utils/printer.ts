@@ -234,6 +234,7 @@ export function buildKitchenReceipt(
 export async function buildCashReceipt(
   order: IncomingOrder,
   lines: CashReceiptLine[],
+  singleTickets?: KitchenReceiptLine[]
 ): Promise<(string | Buffer)[]> {
   const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
@@ -412,6 +413,27 @@ export async function buildCashReceipt(
 
   // spazio sotto (restored to original behavior which was basically 0 because of trimEnd)
   parts.push(repeat("\n", 12).trimEnd());
+
+  // =========================
+  // SINGLE TICKETS
+  // =========================
+  if (singleTickets && singleTickets.length > 0) {
+    const ESC = "\x1B";
+    const FEED_AND_CUT = Buffer.from(ESC + "d" + "\x06" + ESC + "i", "ascii");
+    const GS = "\x1D";
+    const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
+    const TXT_NORMAL = GS + "!" + "\x00";
+
+    for (const ticket of singleTickets) {
+      parts.push(FEED_AND_CUT);
+
+      const qty = ticket.quantity ?? 1;
+      const name = trimStr(ticket.foodName).toUpperCase();
+
+      const ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n\n`;
+      parts.push(ticketStr);
+    }
+  }
 
   return parts;
 }
