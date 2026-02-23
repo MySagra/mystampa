@@ -157,6 +157,12 @@ export function buildKitchenReceipt(
   // =========================
   // HEADER (esattamente come richiesto)
   // =========================
+  let topInfo = `PROGR: ${progress}`;
+  if (trimStr(order.displayCode)) {
+    topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
+  }
+  out.push(cut(topInfo, RECEIPT_W));
+
   out.push(cut("===== ORDINE CUCINA =====", RECEIPT_W));
   out.push(line("="));
 
@@ -234,6 +240,7 @@ export function buildKitchenReceipt(
 export async function buildCashReceipt(
   order: IncomingOrder,
   lines: CashReceiptLine[],
+  singleTickets?: KitchenReceiptLine[]
 ): Promise<(string | Buffer)[]> {
   const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
@@ -277,6 +284,10 @@ export async function buildCashReceipt(
     out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
   out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
+
+  if (trimStr(order.paymentMethod)) {
+    out.push(cut(`PAGAMENTO: ${trimStr(order.paymentMethod).toUpperCase()}`, RECEIPT_W));
+  }
 
   if (trimStr(order.confirmedAt)) {
     try {
@@ -399,19 +410,58 @@ export async function buildCashReceipt(
     mysagraPath = path.join(process.cwd(), 'default-assets', 'mysagralogo.png');
   }
 
+  let mysagraFooterBuf: Buffer | null = null;
   if (fs.existsSync(mysagraPath)) {
-    const footerBuf = await loadImageAsEscPos(mysagraPath, {
+    mysagraFooterBuf = await loadImageAsEscPos(mysagraPath, {
       paperWidth: 576, // 80mm paper requires 576 dots width for centering
       exactHeight: 24, // height of a text line
       inlineText: "mysagra.com"
     });
-    if (footerBuf.length > 0) {
-      parts.push(footerBuf);
+    if (mysagraFooterBuf.length > 0) {
+      parts.push(mysagraFooterBuf);
     }
   }
 
   // spazio sotto (restored to original behavior which was basically 0 because of trimEnd)
   parts.push(repeat("\n", 12).trimEnd());
+
+  // =========================
+  // SINGLE TICKETS
+  // =========================
+  if (singleTickets && singleTickets.length > 0) {
+    const ESC = "\x1B";
+    const FEED_AND_CUT = Buffer.from(ESC + "d" + "\x06" + ESC + "i", "ascii");
+    const GS = "\x1D";
+    const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
+    const TXT_NORMAL = GS + "!" + "\x00";
+
+    for (const ticket of singleTickets) {
+      parts.push(FEED_AND_CUT);
+
+      const qty = ticket.quantity ?? 1;
+      const name = trimStr(ticket.foodName).toUpperCase();
+
+      let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
+
+      let subTitle = "";
+      if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      if (trimStr(order.customer)) {
+        if (subTitle) subTitle += ` - `;
+        subTitle += `CLIENTE: ${trimStr(order.customer)}`;
+      }
+
+      if (subTitle) {
+        ticketStr += `${cut(subTitle, RECEIPT_W)}\n`;
+      }
+
+      ticketStr += `\n`;
+      parts.push(ticketStr);
+
+      if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {
+        parts.push(mysagraFooterBuf);
+      }
+    }
+  }
 
   return parts;
 }
