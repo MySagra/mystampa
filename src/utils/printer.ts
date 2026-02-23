@@ -157,6 +157,12 @@ export function buildKitchenReceipt(
   // =========================
   // HEADER (esattamente come richiesto)
   // =========================
+  let topInfo = `PROGR: ${progress}`;
+  if (trimStr(order.displayCode)) {
+    topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
+  }
+  out.push(cut(topInfo, RECEIPT_W));
+
   out.push(cut("===== ORDINE CUCINA =====", RECEIPT_W));
   out.push(line("="));
 
@@ -279,6 +285,10 @@ export async function buildCashReceipt(
   out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
 
+  if (trimStr(order.paymentMethod)) {
+    out.push(cut(`PAGAMENTO: ${trimStr(order.paymentMethod).toUpperCase()}`, RECEIPT_W));
+  }
+
   if (trimStr(order.confirmedAt)) {
     try {
       const d = new Date(order.confirmedAt as string);
@@ -400,14 +410,15 @@ export async function buildCashReceipt(
     mysagraPath = path.join(process.cwd(), 'default-assets', 'mysagralogo.png');
   }
 
+  let mysagraFooterBuf: Buffer | null = null;
   if (fs.existsSync(mysagraPath)) {
-    const footerBuf = await loadImageAsEscPos(mysagraPath, {
+    mysagraFooterBuf = await loadImageAsEscPos(mysagraPath, {
       paperWidth: 576, // 80mm paper requires 576 dots width for centering
       exactHeight: 24, // height of a text line
       inlineText: "mysagra.com"
     });
-    if (footerBuf.length > 0) {
-      parts.push(footerBuf);
+    if (mysagraFooterBuf.length > 0) {
+      parts.push(mysagraFooterBuf);
     }
   }
 
@@ -430,8 +441,25 @@ export async function buildCashReceipt(
       const qty = ticket.quantity ?? 1;
       const name = trimStr(ticket.foodName).toUpperCase();
 
-      const ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n\n`;
+      let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
+
+      let subTitle = "";
+      if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      if (trimStr(order.customer)) {
+        if (subTitle) subTitle += ` - `;
+        subTitle += `CLIENTE: ${trimStr(order.customer)}`;
+      }
+
+      if (subTitle) {
+        ticketStr += `${cut(subTitle, RECEIPT_W)}\n`;
+      }
+
+      ticketStr += `\n`;
       parts.push(ticketStr);
+
+      if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {
+        parts.push(mysagraFooterBuf);
+      }
     }
   }
 
