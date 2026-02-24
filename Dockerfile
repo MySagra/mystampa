@@ -34,9 +34,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 
-# Copy swagger.json
-COPY --from=builder /app/swagger.json ./swagger.json
-
 # Copy assets and default-assets fallback
 COPY --from=builder /app/assets ./assets
 COPY --from=builder /app/assets ./default-assets
