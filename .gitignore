@@ -6,5 +6,3 @@ dist/
 build/
 coverage/
 npm-debug.log*
-
-swagger.json

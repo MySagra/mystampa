@@ -1,0 +1,397 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Print Service API",
+        "version": "1.0.0",
+        "description": "This API receives orders and prints receipts. For each food item it looks up the product details via the external API to determine its printer and price, grouping items per printer and generating kitchen and cash receipts."
+    },
+    "servers": [
+        {
+            "url": "/",
+            "description": "Base path relative to the current host and port"
+        }
+    ],
+    "paths": {
+        "/print": {
+            "post": {
+                "summary": "Stampa ordine su stampanti di cucina e cassa",
+                "description": "Riceve un ordine (IncomingOrder) contenente id, displayCode, tavolo, cliente, orari e un array di orderItems. Ogni orderItem include id, quantità, foodId, eventuali note e un supplemento (surcharge). Per ogni foodId il server interroga l'API esterna `/v1/foods/{id}` per ottenere nome, prezzo e printerId, raggruppa gli articoli per printerId e stampa uno scontrino di cucina per ciascuna stampante (senza prezzi). Se l'ordine contiene un cashRegisterId viene interrogato `/v1/cash-registers/{id}?include=printer` e si produce uno scontrino fiscale con prezzi, supplementi, sconto e totale. Quando una stampante non è disponibile lo scontrino viene stampato a schermo.",
+                "tags": [
+                    "Print"
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/IncomingOrder"
+                            },
+                            "example": {
+                                "id": 6,
+                                "displayCode": "5BL",
+                                "table": "5",
+                                "customer": "Mario Rossi",
+                                "createdAt": "2025-11-28T10:55:15.983Z",
+                                "confirmedAt": "2025-11-28T11:01:08.225Z",
+                                "ticketNumber": 2,
+                                "status": "CONFIRMED",
+                                "paymentMethod": "CARD",
+                                "subTotal": "31",
+                                "discount": "0",
+                                "total": "31",
+                                "userId": "cmif13wap0003t4fk0ij4682h",
+                                "cashRegisterId": "cmif3kark0004t4u8x26vvudu",
+                                "orderItems": [
+                                    {
+                                        "id": "cmir51j40007t4h4g786kl9j",
+                                        "quantity": 1,
+                                        "orderId": 6,
+                                        "foodId": "cmif13wat0006t4fk9s277yo4",
+                                        "notes": null,
+                                        "surcharge": 0
+                                    },
+                                    {
+                                        "id": "cmir51j40006t4h4yylqbdz3",
+                                        "quantity": 1,
+                                        "orderId": 6,
+                                        "foodId": "cmif13wat0006t4fk9s277yo4",
+                                        "notes": "No formaggio",
+                                        "surcharge": 2
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Stampa effettuata con successo",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ok": {
+                                            "type": "boolean"
+                                        },
+                                        "kitchenPrinters": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string"
+                                            },
+                                            "description": "Elenco degli id delle stampanti di cucina coinvolte"
+                                        },
+                                        "cashPrinterId": {
+                                            "type": "string",
+                                            "nullable": true,
+                                            "description": "Id della stampante associata al registratore di cassa"
+                                        }
+                                    }
+                                },
+                                "example": {
+                                    "ok": true,
+                                    "kitchenPrinters": [
+                                        "abc123",
+                                        "def456"
+                                    ],
+                                    "cashPrinterId": "ghi789"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid payload"
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "IncomingOrder": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "orderItems"
+                ],
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "integer"
+                            }
+                        ],
+                        "description": "Unique identifier of the order"
+                    },
+                    "displayCode": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "table": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "customer": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "createdAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "confirmedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true
+                    },
+                    "ticketNumber": {
+                        "type": "integer",
+                        "nullable": true
+                    },
+                    "status": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "paymentMethod": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "subTotal": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "discount": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "surcharge": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "total": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "cashRegisterId": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "integer"
+                            }
+                        ],
+                        "nullable": true
+                    },
+                    "userId": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "orderItems": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderItemIn"
+                        }
+                    }
+                }
+            },
+            "OrderItemIn": {
+                "type": "object",
+                "required": [
+                    "id",
+                    "quantity",
+                    "foodId"
+                ],
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "quantity": {
+                        "type": "number"
+                    },
+                    "orderId": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "integer"
+                            }
+                        ]
+                    },
+                    "foodId": {
+                        "type": "string"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "nullable": true
+                    },
+                    "unitPrice": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true,
+                        "description": "Prezzo totale della riga (prezzo base già moltiplicato per quantity)."
+                    },
+                    "unitSurcharge": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true,
+                        "description": "Supplemento totale della riga (supplemento già moltiplicato per quantity)."
+                    },
+                    "total": {
+                        "oneOf": [
+                            {
+                                "type": "number"
+                            },
+                            {
+                                "type": "string"
+                            }
+                        ],
+                        "nullable": true,
+                        "description": "Totale riga complessivo (unitPrice + unitSurcharge)."
+                    }
+                }
+            },
+            "CategorizedItem": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "$ref": "#/components/schemas/Category"
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/OrderItem"
+                        }
+                    }
+                }
+            },
+            "Category": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "oneOf": [
+                            {
+                                "type": "string"
+                            },
+                            {
+                                "type": "integer"
+                            }
+                        ],
+                        "description": "Identifier of the category"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the category"
+                    },
+                    "available": {
+                        "type": "boolean",
+                        "description": "Whether the category is available for ordering",
+                        "default": true
+                    },
+                    "position": {
+                        "type": "integer",
+                        "description": "Position or sorting index for the category",
+                        "default": 0
+                    },
+                    "image": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "URL of the category image or null if none"
+                    },
+                    "printerId": {
+                        "type": [
+                            "string",
+                            "null"
+                        ],
+                        "description": "Identifier of the printer associated with this category"
+                    }
+                }
+            },
+            "OrderItem": {
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Unique identifier of the item"
+                    },
+                    "quantity": {
+                        "type": "integer",
+                        "description": "Quantity ordered"
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "Additional notes for the kitchen"
+                    },
+                    "food": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Identifier of the food"
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "Name of the food"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Description of the food"
+                            },
+                            "price": {
+                                "type": "string",
+                                "description": "Price of the food (as a string to accommodate different formats)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
