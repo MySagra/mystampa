@@ -212,6 +212,20 @@ export interface IncomingOrder {
   userId?: string | null;
 
   orderItems: OrderItemIn[];
+
+  /**
+   * When present (for reprint-order events), this array contains the
+   * subset of items that should be reprinted on their respective
+   * kitchen printers. If empty, no kitchen receipts are reprinted.
+   */
+  reprintOrderItems?: OrderItemIn[];
+
+  /**
+   * When true the fiscal receipt (cash receipt) should be reprinted.
+   * This flag is set automatically when the SSE event type is
+   * `reprint-order`.
+   */
+  reprintReceipt?: boolean;
 }
 
 /**

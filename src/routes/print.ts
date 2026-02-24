@@ -146,10 +146,20 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
     : [];
 
+  // Determine which items go to kitchen printers.
+  // For reprint-order events, use reprintOrderItems exclusively (even if empty = no kitchen print).
+  // For normal confirmed-order events (reprintOrderItems undefined), use orderItems.
+  const kitchenItems = order.reprintOrderItems !== undefined
+    ? (order.reprintOrderItems || [])
+    : order.orderItems;
+
+  // Collect all unique food IDs from both kitchen and cash items for API lookups
+  const allItems = [...order.orderItems, ...(order.reprintOrderItems || [])];
+  const allFoodIds = Array.from(new Set(allItems.map(it => it.foodId || it.food?.id).filter(Boolean))) as string[];
+
   const foodDetails = new Map<string, FoodFromApi>();
-  if (targetCategoryIds.length > 0) {
-    const foodIds = Array.from(new Set(order.orderItems.map(it => it.foodId || it.food?.id).filter(Boolean))) as string[];
-    await Promise.all(foodIds.map(async (fId) => {
+  if (targetCategoryIds.length > 0 || allFoodIds.length > 0) {
+    await Promise.all(allFoodIds.map(async (fId) => {
       try {
         const r = await axiosInstance.get<FoodFromApi>(
           `${EXTERNAL_BASE_URL}/v1/foods/${fId}`,
@@ -167,8 +177,8 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     }));
   }
 
-  // Iterate all order items and group accordingly
-  for (const it of order.orderItems) {
+  // Group kitchen items by printer
+  for (const it of kitchenItems) {
     const fId = it.foodId || it.food?.id;
     const apiFood = fId ? foodDetails.get(fId) : undefined;
 
@@ -182,6 +192,17 @@ router.post("/", async (req: PrintRequest, res: Response) => {
       arr.push({ foodName, quantity: qty, notes });
       kitchenByPrinterId.set(printerId, arr);
     }
+  }
+
+  // Build cash receipt lines from orderItems (always the full order)
+  for (const it of order.orderItems) {
+    const fId = it.foodId || it.food?.id;
+    const apiFood = fId ? foodDetails.get(fId) : undefined;
+
+    const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
+    const qty = it.quantity ?? 1;
+    const notes = it.notes ?? null;
+
     const unitPrice =
       it.unitPrice !== undefined && it.unitPrice !== null
         ? toNumber(it.unitPrice)
@@ -284,8 +305,11 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     }
   }
 
-  // Print receipt for cash register printer
-  if (cashRegisterPrinterId) {
+  // Print receipt for cash register printer.
+  // When reprintReceipt is explicitly false the fiscal receipt is skipped.
+  if (order.reprintReceipt === false) {
+    console.log("[Print Route] reprintReceipt=false, skipping cash receipt");
+  } else if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {

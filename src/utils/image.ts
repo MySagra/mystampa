@@ -38,7 +38,7 @@ export async function loadImageAsEscPos(
 
         // If inlineText is provided, load font and measure
         if (options.inlineText) {
-            const font = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
+            const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK); // Font più grande (era 16)
             textWidth = Jimp.measureText(font, options.inlineText);
             const textHeight = Jimp.measureTextHeight(font, options.inlineText, 1000);
 

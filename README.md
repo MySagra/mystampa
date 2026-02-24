@@ -44,12 +44,14 @@ tramite un'interfaccia web.
    `GET /v1/foods/{id}` per recuperare il nome, il prezzo e il `printerId`.
 
    Gli articoli vengono raggruppati per `printerId`: per ciascuna
-   stampante di cucina viene generato uno **scontrino di cucina** che
-   mette in evidenza **tavolo**, **cliente**, **codice ordine** e **ora**
-   insieme a un **progressivo** che si incrementa a ogni stampa su
-   quella stampante. Seguono le righe con quantità e nome del cibo;
-   eventuali note appaiono sulla riga successiva indentata. I prezzi non
-   vengono visualizzati negli scontrini di cucina.
+   stampante di cucina viene generato uno **scontrino di cucina**.
+   Il layout della comanda cucina è il seguente:
+   - La **prima riga** contiene numero progressivo, codice ordine e **ora di conferma**, tutto sulla stessa riga.
+   - La seconda sezione riporta in **font grande**: `N°: [progressivo] - TAVOLO: [tavolo]` su un'unica riga, e il nome del cliente sulla riga successiva (solo se presente).
+   - I cibi ordinati sono stampati in **font leggermente ingrandito** (doppia altezza).
+   - Le **note** di ogni cibo sono stampate su righe separate (una per ogni nota, separata da virgola nell'originale).
+   - I prezzi non vengono visualizzati negli scontrini di cucina.
+   - La carta avanza di qualche riga prima del contenuto per evitare che il testo venga troncato.
 
    Se l'ordine contiene un `cashRegisterId`, il server richiama
    `GET /v1/cash-registers/{id}?include=printer` per ottenere la
@@ -62,7 +64,8 @@ tramite un'interfaccia web.
    l'importo del supplemento. In coda vengono stampati lo sconto (solo
    se diverso da zero) e il **totale complessivo** calcolato
    sommando i prezzi degli articoli e i relativi supplementi e
-   sottraendo lo sconto.
+   sottraendo lo sconto. Il **footer** dello scontrino fiscale include
+   il logo mysagra e la scritta `mysagra.com` in formato ingrandito.
 
    In entrambi i casi il testo viene inviato via TCP alla stampante
    (indirizzo IP e porta). Se la stampante non è configurata o non
@@ -71,7 +74,34 @@ tramite un'interfaccia web.
    diverse righe vuote per garantire che la carta avanzi a sufficienza
    nelle stampanti termiche.
 
-5. **Documentazione Swagger** – La documentazione interattiva si trova su
+5. **Ristampa ordine (`reprint-order`)** – Oltre all'evento `confirmed-order`,
+   il canale SSE supporta ora l'evento `reprint-order`. Il payload include
+   due campi aggiuntivi rispetto a un ordine normale:
+
+   - `reprintReceipt` *(boolean)* – Se `true`, lo scontrino fiscale viene
+     ristampato utilizzando tutti gli `orderItems`. Se `false`, lo scontrino
+     fiscale viene saltato.
+   - `reprintOrderItems` *(array, opzionale)* – Se presente, **esclusivamente
+     questi articoli** vengono ristampati sulle rispettive stampanti di cucina.
+     Se l'array è vuoto, non viene generata alcuna comanda cucina.
+     Se il campo è assente (`undefined`), si comporta come un ordine normale
+     utilizzando `orderItems`.
+
+   Esempio di payload `reprint-order`:
+   ```json
+   {
+     "id": 1,
+     "displayCode": "A01",
+     "reprintReceipt": true,
+     "reprintOrderItems": [
+       { "id": "...", "foodId": "...", "quantity": 2, "notes": "Extra spicy", "food": { "name": "Margherita", "printerId": "...", "id": "..." } }
+     ],
+     "orderItems": [ ... ],
+     ...
+   }
+   ```
+
+6. **Documentazione Swagger** – La documentazione interattiva si trova su
    `/api-docs`. È basata su uno schema OpenAPI definito nel file
    `swagger.json` e descrive l'unico endpoint disponibile (`/print`) con
    esempi di richiesta e risposta.
@@ -223,6 +253,13 @@ facilmente mystampa con un backend che invia gli ordini in tempo reale,
 eliminando la necessità che i client esterni conoscano o invochino
 l'endpoint `/print`. Per tornare alla modalità REST, basta impostare
 `USE_SSE` a `false` (o rimuoverla) nel file `.env`.
+
+Sono supportati due tipi di evento:
+
+| Tipo evento | Comportamento |
+|---|---|
+| `confirmed-order` | Stampa comanda cucina + scontrino fiscale come da ordine normale |
+| `reprint-order` | Ristampa selettiva: usa `reprintOrderItems` per la cucina e `orderItems` per lo scontrino fiscale (se `reprintReceipt: true`) |
 
 ## Note finali
 

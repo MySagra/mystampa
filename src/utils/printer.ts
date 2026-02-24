@@ -153,31 +153,20 @@ export function buildKitchenReceipt(
   const GS = "\x1D";
   const TXT_NORMAL = GS + "!" + "\x00";
   const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
+  const TXT_MEDIUM = GS + "!" + "\x01"; // double height only (slightly bigger)
 
   // =========================
   // HEADER (esattamente come richiesto)
   // =========================
+  out.push("");
+
   let topInfo = `PROGR: ${progress}`;
   if (trimStr(order.displayCode)) {
     topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
   }
-  out.push(cut(topInfo, RECEIPT_W));
 
-  out.push(cut("===== ORDINE CUCINA =====", RECEIPT_W));
-  out.push(line("="));
-
-  const table = trimStr(order.table) || "-";
-  const customer = trimStr(order.customer) || "-";
-
-  out.push(TXT_BIG + cut(`TAVOLO: ${table}`, RECEIPT_W) + TXT_NORMAL);
-  out.push(TXT_BIG + cut(`CLIENTE: ${customer}`, RECEIPT_W) + TXT_NORMAL);
-  out.push(TXT_BIG + cut(`PROGR: ${progress}`, RECEIPT_W) + TXT_NORMAL);
-
-  out.push(line("-"));
-
-  // INFO PICCOLE (separate)
-  if (trimStr(order.displayCode)) out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
-
+  // Aggiunta ORA sulla stessa riga (se c'è spazio, o andrà accapo automaticamente se troppo lungo)
+  let timeStr = "";
   if (trimStr(order.confirmedAt)) {
     try {
       const d = new Date(order.confirmedAt as string);
@@ -187,12 +176,49 @@ export function buildKitchenReceipt(
         const year = d.getFullYear();
         const hrs = String(d.getHours()).padStart(2, '0');
         const mins = String(d.getMinutes()).padStart(2, '0');
-        out.push(cut(`ORA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
+        timeStr = `${day}/${month}/${year} ${hrs}:${mins}`;
       } else {
-        out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+        timeStr = trimStr(order.confirmedAt);
       }
     } catch {
-      out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
+      timeStr = trimStr(order.confirmedAt);
+    }
+  }
+
+  if (timeStr) {
+    // Aggiungi la data/ora sulla stessa riga allineata a destra o semplicemente dopo uno spazio
+    const timeText = `  ORA: ${timeStr}`;
+    if ((topInfo + timeText).length <= RECEIPT_W) {
+      // Pad per spingere l'ora verso destra
+      const padding = RECEIPT_W - topInfo.length - timeText.length;
+      topInfo += " ".repeat(Math.max(1, padding)) + timeText;
+    } else {
+      // Se non c'è spazio, appendi normalmente
+      topInfo += timeText;
+    }
+  }
+
+  out.push(cut(topInfo, RECEIPT_W));
+  out.push(line("="));
+
+  const table = trimStr(order.table) || "-";
+  const customer = trimStr(order.customer) || "-";
+
+  // Metti TAVOLO e PROGR sulla stessa riga, se possibile
+  const tavProgLine = `N°: ${progress} - TAVOLO: ${table}`;
+  out.push(TXT_BIG + cut(tavProgLine, Math.floor(RECEIPT_W / 2)) + TXT_NORMAL); // TXT_BIG dimezza i caratteri stampabili sulla riga (circa 24 totali)
+
+  if (customer !== "-") {
+    const custLine = `CLIENTE: ${customer}`;
+    if (custLine.length <= Math.floor(RECEIPT_W / 2)) {
+      // Entra con il font grande (doppia larghezza)
+      out.push(TXT_BIG + custLine + TXT_NORMAL);
+    } else if (custLine.length <= RECEIPT_W) {
+      // Entra con il font normale o solo doppia altezza (TXT_MEDIUM)
+      out.push(TXT_MEDIUM + custLine + TXT_NORMAL);
+    } else {
+      // Troppo lungo, taglia al limite massimo del foglio
+      out.push(TXT_MEDIUM + cut(custLine, RECEIPT_W) + TXT_NORMAL);
     }
   }
 
@@ -210,14 +236,19 @@ export function buildKitchenReceipt(
     const wrappedName = wrapText(namePrefix + name, RECEIPT_W, indent);
 
     for (const wrapLine of wrappedName) {
-      out.push(wrapLine);
+      out.push(TXT_MEDIUM + wrapLine + TXT_NORMAL);
     }
 
     if (l.notes && trimStr(l.notes)) {
-      const noteIndent = indent + "      "; // 6 chars for 'NOTE: '
-      const wrappedNotes = wrapText(`${indent}NOTE: ${trimStr(l.notes)}`, RECEIPT_W, noteIndent);
-      for (const wrapNote of wrappedNotes) {
-        out.push(wrapNote);
+      const noteIndent = indent + "  - ";
+      // Dividiamo le note per virgola, rimuoviamo gli spazi vuoti e stampiamo ogni nota a capo
+      const noteItems = trimStr(l.notes).split(',').map(n => n.trim()).filter(n => n.length > 0);
+
+      for (const note of noteItems) {
+        const wrappedNotes = wrapText(`${noteIndent}${note}`, RECEIPT_W, indent + "    ");
+        for (const wrapNote of wrappedNotes) {
+          out.push(wrapNote);
+        }
       }
     }
 
@@ -428,7 +459,7 @@ export async function buildCashReceipt(
   if (fs.existsSync(mysagraPath)) {
     mysagraFooterBuf = await loadImageAsEscPos(mysagraPath, {
       paperWidth: 576, // 80mm paper requires 576 dots width for centering
-      exactHeight: 24, // height of a text line
+      exactHeight: 48, // raddoppiata l'altezza per renderlo più grande
       inlineText: "mysagra.com"
     });
     if (mysagraFooterBuf.length > 0) {

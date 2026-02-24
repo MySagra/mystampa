@@ -81,19 +81,25 @@ async function startSSE(): Promise<void> {
       },
       async onmessage(event) {
         // Each event data should contain a JSON object representing
-        // an IncomingOrder. Forward it to the /print endpoint so the
-        // existing printing logic can process it.
+        // an IncomingOrder. The event type (event.event) tells us
+        // whether this is a new order or a reprint request.
         try {
           if (!event.data) return;
           const payload = JSON.parse(event.data);
-          console.log('SSE received event:', payload);
-          // Forward to the local /print route for processing. This
-          // reuses the existing business logic rather than duplicating it.
-          await axiosInstance.post(
-            `http://localhost:${localPort}/print`,
-            payload,
-            { headers: { 'Content-Type': 'application/json' } },
-          );
+          const eventType = event.event ?? '';
+          console.log(`SSE received event (type=${eventType}):`, payload);
+
+          if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
+            // Forward to the local /print route for processing. This
+            // reuses the existing business logic rather than duplicating it.
+            await axiosInstance.post(
+              `http://localhost:${localPort}/print`,
+              payload,
+              { headers: { 'Content-Type': 'application/json' } },
+            );
+          } else {
+            console.log(`SSE: ignoring event type '${eventType}'`);
+          }
         } catch (err) {
           console.error('SSE: failed to handle event', err);
         }
