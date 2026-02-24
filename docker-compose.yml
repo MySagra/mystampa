@@ -1,0 +1,22 @@
+services:
+  mystampa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mystampa
+    restart: always
+    ports:
+      - "${PORT}:${PORT}"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=${PORT}
+    volumes:
+      - ./assets:/app/assets
+    networks:
+      - mysagra_default
+
+networks:
+  mysagra_default:
+    external: true
