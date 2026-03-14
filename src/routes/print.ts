@@ -125,11 +125,11 @@ router.post("/", async (req: PrintRequest, res: Response) => {
 
   const EXTERNAL_BASE_URL: string =
     process.env.EXTERNAL_BASE_URL || "http://localhost:4300";
-  const token: string | undefined = (global as any).__AUTH_TOKEN;
-  if (!token) {
+  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
+  if (!cookie) {
     return res
       .status(500)
-      .json({ error: "Missing auth token (login not completed)" });
+      .json({ error: "Missing auth cookie (login not completed)" });
   }
 
   // Aggregation map for kitchen receipts keyed by printerId
@@ -166,7 +166,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
           {
             headers: {
               Accept: "application/json",
-              Authorization: `Bearer ${token}`,
+              ...(cookie ? { Cookie: cookie } : {}),
             }
           }
         );
@@ -236,7 +236,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
         {
           headers: {
             Accept: "application/json",
-            Authorization: `Bearer ${token}`,
+            ...(cookie ? { Cookie: cookie } : {}),
           },
         },
       );

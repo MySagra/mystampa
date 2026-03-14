@@ -37,13 +37,14 @@ const USE_SSE: boolean = (process.env.USE_SSE || '').toLowerCase() === 'true' ||
 const SSE_URL: string = process.env.SSE_URL || 'http://localhost:3001/events/cashier';
 
 // Types for login response
-interface LoginResponse {
-  user: any;
-  accessToken: string;
+interface LoginUser {
+  id: string;
+  username: string;
+  role: string;
 }
 
 // In‑memory caches
-let authInfo: LoginResponse | null = null;
+let loggedUser: LoginUser | null = null;
 let printers: Printer[] = [];
 
 /**
@@ -56,10 +57,10 @@ let printers: Printer[] = [];
 async function startSSE(): Promise<void> {
   const url = SSE_URL;
   const localPort = PORT;
-  // Access the JWT saved during initialization. Without a token the
-  // Authorization header will be omitted; if the backend enforces
+  // Access the cookie saved during initialization. Without a cookie the
+  // request will be sent without authentication; if the backend enforces
   // authentication the connection may fail.
-  const token: string | undefined = (global as any).__AUTH_TOKEN;
+  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
   console.log(`SSE: connecting to ${url} (USE_SSE=${USE_SSE})`);
   try {
     await fetchEventSource(url, {
@@ -68,7 +69,7 @@ async function startSSE(): Promise<void> {
       fetch: fetch,
       headers: {
         Accept: 'text/event-stream',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(cookie ? { Cookie: cookie } : {}),
       },
       // Note: an AbortController could be passed in to allow manual
       // shutdown, but here we keep a persistent connection.
@@ -129,11 +130,12 @@ declare global {
 }
 
 /**
- * Perform login against the external API to obtain an access token.
+ * Perform login against the external API.
+ * Returns the user object and stores the mysagra_token cookie globally.
  */
-async function login(): Promise<LoginResponse | null> {
+async function login(): Promise<LoginUser | null> {
   try {
-    const resp = await axiosInstance.post<LoginResponse>(`${EXTERNAL_BASE_URL}/auth/login`, {
+    const resp = await axiosInstance.post<LoginUser>(`${EXTERNAL_BASE_URL}/auth/login`, {
       username: ADMIN_USERNAME,
       password: ADMIN_PASSWORD,
     }, {
@@ -142,6 +144,29 @@ async function login(): Promise<LoginResponse | null> {
         Accept: 'application/json',
       },
     });
+
+    // Extract mysagra_token from the Set-Cookie header
+    const setCookieHeader = resp.headers['set-cookie'];
+    let authCookie: string | undefined;
+    if (setCookieHeader) {
+      const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+      for (const c of cookies) {
+        const match = c.match(/mysagra_token=([^;]+)/);
+        if (match) {
+          authCookie = `mysagra_token=${match[1]}`;
+          break;
+        }
+      }
+    }
+
+    if (!authCookie) {
+      console.error('Login succeeded but mysagra_token cookie not found in response.');
+      return null;
+    }
+
+    // Store the cookie for use in subsequent API calls
+    (global as any).__AUTH_COOKIE = authCookie;
+    console.log('Login successful. mysagra_token cookie stored.');
     return resp.data;
   } catch (err: any) {
     console.error('Login failed:', err.message);
@@ -152,14 +177,15 @@ async function login(): Promise<LoginResponse | null> {
 
 
 /**
- * Fetch printers list using the provided token.
+ * Fetch printers list using the stored auth cookie.
  */
-async function fetchPrinters(token: string): Promise<Printer[]> {
+async function fetchPrinters(): Promise<Printer[]> {
+  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
   try {
     const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/printers`, {
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        ...(cookie ? { Cookie: cookie } : {}),
       },
     });
     const list: Printer[] = (resp.data as any[]).map(Printer.fromJson);
@@ -175,23 +201,21 @@ async function fetchPrinters(token: string): Promise<Printer[]> {
  * is stored in module‑level variables and logged to console.
  */
 async function initialize(): Promise<void> {
-  authInfo = await login();
-  if (!authInfo) {
+  loggedUser = await login();
+  if (!loggedUser) {
     console.error('Unable to authenticate; printers will not be loaded.');
     return;
   }
-  const token = authInfo.accessToken;
-  // Expose token on the global object for routes to reuse
-  (global as any).__AUTH_TOKEN = token;
+  console.log(`Logged in as: ${loggedUser.username} (role: ${loggedUser.role})`);
 
   // Initial fetch
-  printers = await fetchPrinters(token);
+  printers = await fetchPrinters();
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
 
   // Refresh printers every 2 minutes (120000 ms)
   setInterval(async () => {
     try {
-      printers = await fetchPrinters(token);
+      printers = await fetchPrinters();
       console.log('Printers updated via polling.');
     } catch (e) {
       console.error('Failed to update printers:', e);
