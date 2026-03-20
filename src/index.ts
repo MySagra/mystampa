@@ -28,7 +28,7 @@ dotenv.config();
 const EXTERNAL_BASE_URL: string = process.env.EXTERNAL_BASE_URL || 'http://localhost:4300';
 const ADMIN_USERNAME: string = process.env.ADMIN_USERNAME || 'admin';
 const ADMIN_PASSWORD: string = process.env.ADMIN_PASSWORD || 'admin';
-const PORT: number = process.env.PORT ? parseInt(process.env.PORT) : 1234;
+const PORT: number = process.env.PORT ? parseInt(process.env.PORT) : 3032;
 
 // When USE_SSE is set to 'true' or 'sse', the service will subscribe to an
 // SSE stream instead of relying solely on the /print endpoint. The

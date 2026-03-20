@@ -125,7 +125,7 @@ tramite un'interfaccia web.
      `http://localhost:4300`).
    - `ADMIN_USERNAME` e `ADMIN_PASSWORD` – Credenziali per l'autenticazione.
    - `PORT` – Porta su cui questo servizio deve ascoltare in locale. La
-     porta predefinita è **1234**.
+     porta predefinita è **3032**.
 
 > **Nota:** il file `.env` non deve essere committato su sistemi di versioning. È
 > incluso solo come esempio.
@@ -164,8 +164,8 @@ tramite un'interfaccia web.
        ```
 
    Per impostazione predefinita il server ascolta sulla porta definita
-   nella variabile `PORT` (1234 se non modificata). Di conseguenza
-   l'applicazione sarà disponibile su `http://localhost:1234` se non viene
+   nella variabile `PORT` (3032 se non modificata). Di conseguenza
+   l'applicazione sarà disponibile su `http://localhost:3032` se non viene
    specificato diversamente.
 
 3. Visita `http://localhost:<PORT>/api-docs` in un browser per consultare la
