@@ -1,5 +1,6 @@
 services:
   mystampa:
+    image: mystampa-stampa
     build:
       context: .
       dockerfile: Dockerfile
