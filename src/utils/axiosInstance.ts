@@ -42,9 +42,9 @@ axiosInstance.interceptors.response.use(
         config._retryCount = config._retryCount || 0;
         config._retryCount += 1;
 
-        // Se l'errore è 401 (Credenziali errate) NON ha senso riprovare, fermiamoci subito.
+        // Se l'errore è 401 (API key non valida) NON ha senso riprovare, fermiamoci subito.
         if (error.response && error.response.status === 401) {
-            console.error(`[Axios Error] Errore 401: Credenziali respinte dal server. Interrompo i retry.`);
+            console.error(`[Axios Error] Errore 401: API key non valida o non autorizzata. Interrompo i retry.`);
             return Promise.reject(error);
         }
 

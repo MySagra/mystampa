@@ -7,10 +7,12 @@
  */
 
 import express, { Request, Response } from 'express';
+import axios from 'axios';
 import axiosInstance from './utils/axiosInstance';
 import cookieParser from 'cookie-parser';
 import net from 'net';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder } from './routes/print';
@@ -19,14 +21,10 @@ import { handlePrintOrder } from './routes/print';
 dotenv.config();
 
 // Configuration variables with defaults
-const EXTERNAL_BASE_URL: string = process.env.EXTERNAL_BASE_URL || 'http://localhost:4300';
+const API_URL: string = process.env.API_URL || 'http://localhost:4300';
 const API_KEY: string = process.env.API_KEY || '';
-const PORT: number = process.env.PORT ? parseInt(process.env.PORT) : 3032;
+const PORT = 3032;
 
-// When USE_SSE is set to 'true' or 'sse', the service will subscribe to an
-// SSE stream. The endpoint for the event source can be configured via SSE_URL.
-const USE_SSE: boolean = (process.env.USE_SSE || '').toLowerCase() === 'true' || (process.env.USE_SSE || '').toLowerCase() === 'sse';
-const SSE_URL: string = process.env.SSE_URL || 'http://localhost:3001/events/cashier';
 
 // In‑memory cache
 let printers: Printer[] = [];
@@ -37,7 +35,7 @@ let printers: Printer[] = [];
  * to process orders pushed by a backend without requiring HTTP calls.
  */
 async function startSSE(): Promise<void> {
-  const url = SSE_URL;
+  const url = `${API_URL}/events/printer`;
   const MAX_RETRIES = 6;
   const RETRY_DELAY_MS = 30_000;
 
@@ -127,7 +125,7 @@ async function startSSE(): Promise<void> {
  */
 async function fetchPrinters(): Promise<Printer[]> {
   try {
-    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/printers`, {
+    const resp = await axiosInstance.get(`${API_URL}/v1/printers`, {
       headers: {
         Accept: 'application/json',
         'X-API-KEY': API_KEY,
@@ -162,12 +160,9 @@ async function initialize(): Promise<void> {
     }
   }, 120000);
 
-  // If SSE mode is enabled, start listening for events.
-  if (USE_SSE) {
-    startSSE().catch((err) => {
-      console.error('Error starting SSE listener:', err);
-    });
-  }
+  startSSE().catch((err) => {
+    console.error('Error starting SSE listener:', err);
+  });
 }
 
 /**
@@ -233,7 +228,7 @@ function probePrinterStatus(ip: string, port: number, timeoutMs = 3000): Promise
 async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR'): Promise<void> {
   try {
     await axiosInstance.patch(
-      `${EXTERNAL_BASE_URL}/v1/printers/${printerId}`,
+      `${API_URL}/v1/printers/${printerId}`,
       { status },
       {
         headers: {
@@ -282,11 +277,10 @@ async function runPrinterStatusCheck(): Promise<void> {
 initialize().catch((err) => console.error('Initialization error:', err));
 
 // Load saved config from config.json to populate env for print handler
-const fsSync = require('fs');
-const CONFIG_FILE = path.join(process.cwd(), 'config.json');
+const CONFIG_FILE = path.join(process.cwd(), 'data', 'config.json');
 try {
-  if (fsSync.existsSync(CONFIG_FILE)) {
-    const savedConfig = JSON.parse(fsSync.readFileSync(CONFIG_FILE, 'utf-8'));
+  if (fs.existsSync(CONFIG_FILE)) {
+    const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     if (savedConfig.singleTicketCategories) {
       process.env.SINGLE_TICKET_CATEGORIES = savedConfig.singleTicketCategories.join(',');
       console.log('Loaded single ticket categories from config.json');
@@ -302,16 +296,18 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// Serve static files from assets directory
+// Serve static files
 const assetsDir = path.join(process.cwd(), 'assets');
 app.use('/assets', express.static(assetsDir));
+const publicDir = path.join(process.cwd(), 'public');
+app.use('/public', express.static(publicDir));
 
 // Configure EJS as view engine
 // Views live in src/views and are not copied by tsc, so resolve from project root
 app.set('view engine', 'ejs');
 const viewsDir = path.join(__dirname, 'views');
 // If running from dist/, views won't exist there — fall back to src/views
-if (!fsSync.existsSync(viewsDir)) {
+if (!fs.existsSync(viewsDir)) {
   app.set('views', path.join(__dirname, '..', 'src', 'views'));
 } else {
   app.set('views', viewsDir);
@@ -332,28 +328,49 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 /**
- * POST /login - Handle login form submission (validates against API key)
+ * POST /login - Handle login form submission
  */
-app.post('/login', (req: Request, res: Response) => {
-  const { password } = req.body;
+app.post('/login', async (req: Request, res: Response) => {
+  const { username, password } = req.body;
 
-  if (!password) {
-    return res.render('login', { error: 'API Key obbligatoria' });
+  if (!username || !password) {
+    return res.render('login', { error: 'Username e Password sono obbligatori' });
   }
 
-  if (password !== API_KEY) {
-    return res.render('login', { error: 'API Key non valida' });
+  try {
+    // Use plain axios to avoid the retry interceptor — fail immediately on wrong credentials
+    const resp = await axios.post(`${API_URL}/auth/login`, { username, password }, {
+      timeout: 10000,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    });
+
+    const setCookieHeader = resp.headers['set-cookie'];
+    let tokenValue: string | undefined;
+    if (setCookieHeader) {
+      const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
+      for (const c of cookieHeaders) {
+        const match = c.match(/mysagra_token=([^;]+)/);
+        if (match) { tokenValue = match[1]; break; }
+      }
+    }
+
+    if (!tokenValue) {
+      return res.render('login', { error: 'Login riuscito ma token non trovato nella risposta' });
+    }
+
+    res.cookie('mystampa_session', tokenValue, {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'lax',
+      maxAge: 6 * 60 * 60 * 1000,
+    });
+
+    return res.redirect('/config');
+  } catch (err: any) {
+    const status = err.response?.status;
+    if (status === 401) return res.render('login', { error: 'Credenziali non valide' });
+    return res.render('login', { error: 'Errore durante il login' });
   }
-
-  // Set session cookie for the web UI
-  res.cookie('mystampa_session', API_KEY, {
-    httpOnly: true,
-    secure: false,
-    sameSite: 'lax',
-    maxAge: 6 * 60 * 60 * 1000, // 6 hours
-  });
-
-  return res.redirect('/config');
 });
 
 /**
@@ -374,8 +391,8 @@ app.get('/config', (req: Request, res: Response) => {
  */
 function readConfig(): { singleTicketCategories: string[] } {
   try {
-    if (fsSync.existsSync(CONFIG_FILE)) {
-      const raw = fsSync.readFileSync(CONFIG_FILE, 'utf-8');
+    if (fs.existsSync(CONFIG_FILE)) {
+      const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
       return JSON.parse(raw);
     }
   } catch (e) {
@@ -388,7 +405,8 @@ function readConfig(): { singleTicketCategories: string[] } {
  * Write config to file and update env variable.
  */
 function writeConfig(config: { singleTicketCategories: string[] }) {
-  fsSync.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
   // Update env so print handler picks up new values
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
 }
@@ -402,11 +420,9 @@ app.get('/api/categories', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   try {
-    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/categories`, {
-      headers: {
-        Accept: 'application/json',
-        'X-API-KEY': API_KEY,
-      },
+    const resp = await axios.get(`${API_URL}/v1/categories`, {
+      timeout: 10000,
+      headers: { Accept: 'application/json', Cookie: `mysagra_token=${token}` },
     });
     return res.json(resp.data);
   } catch (err: any) {
@@ -464,7 +480,7 @@ app.post('/api/config', (req: Request, res: Response) => {
 /**
  * POST /logout - Clear session and redirect to login
  */
-app.post('/logout', (req: Request, res: Response) => {
+app.post('/logout', (_req: Request, res: Response) => {
   res.clearCookie('mystampa_session');
   res.redirect('/');
 });

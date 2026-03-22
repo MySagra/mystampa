@@ -21,6 +21,7 @@
 import net from 'net';
 import fs from 'fs';
 import path from 'path';
+import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
 
@@ -518,8 +519,6 @@ export async function buildCashReceipt(
  * returned promise resolves when the data has been written and
  * the socket closed, and rejects on any connection error.
  */
-import iconv from "iconv-lite";
-
 export async function sendToPrinter(
   ip: string,
   port: number,

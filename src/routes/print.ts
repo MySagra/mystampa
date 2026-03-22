@@ -16,6 +16,9 @@ import {
   CashRegisterFromApi,
   Printer,
 } from "../models";
+
+const API_URL: string = process.env.API_URL || "http://localhost:4300";
+const apiKey: string = process.env.API_KEY || "";
 import { printQueue } from "../utils/printQueue";
 import {
   buildKitchenReceipt,
@@ -117,18 +120,6 @@ export async function handlePrintOrder(
     };
   }
 
-  const EXTERNAL_BASE_URL: string =
-    process.env.EXTERNAL_BASE_URL || "http://localhost:4300";
-  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
-  if (!cookie) {
-    return {
-      ok: false,
-      kitchenPrinters: [],
-      cashPrinterId: "",
-      error: "Missing auth cookie (login not completed)",
-    };
-  }
-
   // Aggregation map for kitchen receipts keyed by printerId
   const kitchenByPrinterId = new Map<string, KitchenReceiptLine[]>();
   // Lines for the cash receipt (all items). Each entry includes the surcharge
@@ -159,11 +150,11 @@ export async function handlePrintOrder(
     await Promise.all(allFoodIds.map(async (fId) => {
       try {
         const r = await axiosInstance.get<FoodFromApi>(
-          `${EXTERNAL_BASE_URL}/v1/foods/${fId}`,
+          `${API_URL}/v1/foods/${fId}`,
           {
             headers: {
               Accept: "application/json",
-              ...(cookie ? { Cookie: cookie } : {}),
+              'X-API-KEY': apiKey,
             }
           }
         );
@@ -229,11 +220,11 @@ export async function handlePrintOrder(
     const crId = trimStr(order.cashRegisterId);
     try {
       const r = await axiosInstance.get<CashRegisterFromApi>(
-        `${EXTERNAL_BASE_URL}/v1/cash-registers/${crId}?include=printer`,
+        `${API_URL}/v1/cash-registers/${crId}?include=printer`,
         {
           headers: {
             Accept: "application/json",
-            ...(cookie ? { Cookie: cookie } : {}),
+            'X-API-KEY': apiKey,
           },
         },
       );

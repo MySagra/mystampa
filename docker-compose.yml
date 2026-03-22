@@ -7,17 +7,20 @@ services:
     container_name: mystampa
     restart: always
     ports:
-      - "${PORT}:${PORT}"
+      - "3032:3032"
     env_file:
       - .env
     environment:
       - NODE_ENV=production
-      - PORT=${PORT}
     volumes:
       - ./assets:/app/assets
+      - mystampa_config:/app/data
     networks:
-      - mysagra_default
+      - mysagra-network
+
+volumes:
+  mystampa_config:
 
 networks:
-  mysagra_default:
+  mysagra-network:
     external: true
