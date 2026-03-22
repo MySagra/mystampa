@@ -282,17 +282,16 @@ export async function handlePrintOrder(
     };
   }
 
-  // Print receipts for kitchen printers
+  // Build all print jobs (kitchen + cash) and fire them in parallel
+  const printJobs: Promise<void>[] = [];
+
   for (const [printerId, lines] of kitchenByPrinterId.entries()) {
     const pr = resolvePrinter(printerId);
-    // Determine progressive number for this printer
     const prog = progressCounters[printerId] ?? 1;
     const receipt = buildKitchenReceipt(order, lines, prog);
-    // Increment progress counter
     progressCounters[printerId] = prog + 1;
     if (pr) {
-      // Use safePrint logic
-      await safePrint(printerId, pr.ip, pr.port, receipt);
+      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt));
     } else {
       console.log("NO PRINTER for kitchen printerId=", printerId);
       console.log(receipt);
@@ -307,8 +306,7 @@ export async function handlePrintOrder(
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {
-      // Use safePrint logic
-      await safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt);
+      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt));
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);
@@ -317,6 +315,8 @@ export async function handlePrintOrder(
     console.log("NO cashRegister printerId found");
     console.log(await buildCashReceipt(order, cashLines, singleTickets));
   }
+
+  await Promise.all(printJobs);
 
   return {
     ok: true,
