@@ -7,7 +7,6 @@
  */
 
 import express, { Request, Response } from 'express';
-import axios from 'axios';
 import axiosInstance from './utils/axiosInstance';
 import cookieParser from 'cookie-parser';
 import net from 'net';
@@ -21,8 +20,7 @@ dotenv.config();
 
 // Configuration variables with defaults
 const EXTERNAL_BASE_URL: string = process.env.EXTERNAL_BASE_URL || 'http://localhost:4300';
-const ADMIN_USERNAME: string = process.env.ADMIN_USERNAME || 'admin';
-const ADMIN_PASSWORD: string = process.env.ADMIN_PASSWORD || 'admin';
+const API_KEY: string = process.env.API_KEY || '';
 const PORT: number = process.env.PORT ? parseInt(process.env.PORT) : 3032;
 
 // When USE_SSE is set to 'true' or 'sse', the service will subscribe to an
@@ -30,15 +28,7 @@ const PORT: number = process.env.PORT ? parseInt(process.env.PORT) : 3032;
 const USE_SSE: boolean = (process.env.USE_SSE || '').toLowerCase() === 'true' || (process.env.USE_SSE || '').toLowerCase() === 'sse';
 const SSE_URL: string = process.env.SSE_URL || 'http://localhost:3001/events/cashier';
 
-// Types for login response
-interface LoginUser {
-  id: string;
-  username: string;
-  role: string;
-}
-
-// In‑memory caches
-let loggedUser: LoginUser | null = null;
+// In‑memory cache
 let printers: Printer[] = [];
 
 /**
@@ -57,14 +47,13 @@ async function startSSE(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
 
-    const cookie: string | undefined = (global as any).__AUTH_COOKIE;
     console.log(`SSE: connecting to ${url} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
 
     try {
       const response = await fetch(url, {
         headers: {
           Accept: 'text/event-stream',
-          ...(cookie ? { Cookie: cookie } : {}),
+          'X-API-KEY': API_KEY,
         },
       });
 
@@ -134,60 +123,14 @@ async function startSSE(): Promise<void> {
 }
 
 /**
- * Perform login against the external API.
- * Returns the user object and stores the mysagra_token cookie globally.
- */
-async function login(): Promise<LoginUser | null> {
-  try {
-    const resp = await axiosInstance.post<LoginUser>(`${EXTERNAL_BASE_URL}/auth/login`, {
-      username: ADMIN_USERNAME,
-      password: ADMIN_PASSWORD,
-    }, {
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-    });
-
-    // Extract mysagra_token from the Set-Cookie header
-    const setCookieHeader = resp.headers['set-cookie'];
-    let authCookie: string | undefined;
-    if (setCookieHeader) {
-      const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-      for (const c of cookies) {
-        const match = c.match(/mysagra_token=([^;]+)/);
-        if (match) {
-          authCookie = `mysagra_token=${match[1]}`;
-          break;
-        }
-      }
-    }
-
-    if (!authCookie) {
-      console.error('Login succeeded but mysagra_token cookie not found in response.');
-      return null;
-    }
-
-    // Store the cookie for use in subsequent API calls
-    (global as any).__AUTH_COOKIE = authCookie;
-    console.log('Login successful. mysagra_token cookie stored.');
-    return resp.data;
-  } catch (err: any) {
-    console.error('Login failed:', err.message);
-    return null;
-  }
-}
-
-/**
- * Fetch printers list using the stored auth cookie.
+ * Fetch printers list using the API key.
  */
 async function fetchPrinters(): Promise<Printer[]> {
-  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
   try {
     const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/printers`, {
       headers: {
         Accept: 'application/json',
-        ...(cookie ? { Cookie: cookie } : {}),
+        'X-API-KEY': API_KEY,
       },
     });
     const list: Printer[] = (resp.data as any[]).map(Printer.fromJson);
@@ -199,17 +142,10 @@ async function fetchPrinters(): Promise<Printer[]> {
 }
 
 /**
- * Initialize by logging in and fetching printers. The data
+ * Initialize by fetching printers. The data
  * is stored in module‑level variables and logged to console.
  */
 async function initialize(): Promise<void> {
-  loggedUser = await login();
-  if (!loggedUser) {
-    console.error('Unable to authenticate; printers will not be loaded.');
-    return;
-  }
-  console.log(`Logged in as: ${loggedUser.username} (role: ${loggedUser.role})`);
-
   // Initial fetch
   printers = await fetchPrinters();
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
@@ -292,15 +228,9 @@ function probePrinterStatus(ip: string, port: number, timeoutMs = 3000): Promise
 }
 
 /**
- * Patch the printer status on the external API using the service-level
- * admin cookie (from .env credentials), NOT the web UI session.
+ * Patch the printer status on the external API using the API key.
  */
 async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR'): Promise<void> {
-  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
-  if (!cookie) {
-    console.warn(`patchPrinterStatus: no auth cookie available, skipping PATCH for printer ${printerId}`);
-    return;
-  }
   try {
     await axiosInstance.patch(
       `${EXTERNAL_BASE_URL}/v1/printers/${printerId}`,
@@ -309,7 +239,7 @@ async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          Cookie: cookie,
+          'X-API-KEY': API_KEY,
         },
       }
     );
@@ -402,64 +332,28 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 /**
- * POST /login - Handle login form submission
+ * POST /login - Handle login form submission (validates against API key)
  */
-app.post('/login', async (req: Request, res: Response) => {
-  const { username, password } = req.body;
+app.post('/login', (req: Request, res: Response) => {
+  const { password } = req.body;
 
-  if (!username || !password) {
-    return res.render('login', { error: 'Username e Password sono obbligatori' });
+  if (!password) {
+    return res.render('login', { error: 'API Key obbligatoria' });
   }
 
-  try {
-    // Use plain axios (not axiosInstance) to avoid the retry interceptor.
-    // The web login should fail immediately on wrong credentials.
-    const resp = await axios.post(`${EXTERNAL_BASE_URL}/auth/login`, {
-      username,
-      password,
-    }, {
-      timeout: 10000,
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-    });
-
-    // Extract mysagra_token from the Set-Cookie header
-    const setCookieHeader = resp.headers['set-cookie'];
-    let tokenValue: string | undefined;
-    if (setCookieHeader) {
-      const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-      for (const c of cookieHeaders) {
-        const match = c.match(/mysagra_token=([^;]+)/);
-        if (match) {
-          tokenValue = match[1];
-          break;
-        }
-      }
-    }
-
-    if (!tokenValue) {
-      return res.render('login', { error: 'Login riuscito ma token non trovato nella risposta' });
-    }
-
-    // Set session cookie for the web UI
-    res.cookie('mystampa_session', tokenValue, {
-      httpOnly: true,
-      secure: false, // set to true if behind HTTPS
-      sameSite: 'lax',
-      maxAge: 6 * 60 * 60 * 1000, // 6 hours
-    });
-
-    return res.redirect('/config');
-  } catch (err: any) {
-    console.error('Web login failed:', err.message);
-    const status = err.response?.status;
-    if (status === 401) {
-      return res.render('login', { error: 'Credenziali non valide' });
-    }
-    return res.render('login', { error: 'Errore durante il login' });
+  if (password !== API_KEY) {
+    return res.render('login', { error: 'API Key non valida' });
   }
+
+  // Set session cookie for the web UI
+  res.cookie('mystampa_session', API_KEY, {
+    httpOnly: true,
+    secure: false,
+    sameSite: 'lax',
+    maxAge: 6 * 60 * 60 * 1000, // 6 hours
+  });
+
+  return res.redirect('/config');
 });
 
 /**
@@ -508,11 +402,10 @@ app.get('/api/categories', async (req: Request, res: Response) => {
     return res.status(401).json({ error: 'Not authenticated' });
   }
   try {
-    const resp = await axios.get(`${EXTERNAL_BASE_URL}/v1/categories`, {
-      timeout: 10000,
+    const resp = await axiosInstance.get(`${EXTERNAL_BASE_URL}/v1/categories`, {
       headers: {
         Accept: 'application/json',
-        Cookie: `mysagra_token=${token}`,
+        'X-API-KEY': API_KEY,
       },
     });
     return res.json(resp.data);
