@@ -51,56 +51,76 @@ let printers: Printer[] = [];
  */
 async function startSSE(): Promise<void> {
   const url = SSE_URL;
-  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
-  console.log(`SSE: connecting to ${url} (USE_SSE=${USE_SSE})`);
-  try {
-    await fetchEventSource(url, {
-      openWhenHidden: true,
-      method: 'GET',
-      fetch: fetch,
-      headers: {
-        Accept: 'text/event-stream',
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-      async onopen(response) {
-        if (response.ok) {
-          console.log('SSE connected successfully');
-        } else {
-          console.error('SSE connection failed:', response.status, response.statusText);
-        }
-      },
-      async onmessage(event) {
-        try {
-          if (!event.data) return;
-          const payload = JSON.parse(event.data);
-          const eventType = event.event ?? '';
-          console.log(`SSE received event (type=${eventType}):`, payload);
+  const MAX_RETRIES = 6;
+  const RETRY_DELAY_MS = 30_000;
 
-          if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
-            // Call the print handler directly instead of making an HTTP request
-            const result = await handlePrintOrder(payload, printers);
-            if (result.ok) {
-              console.log(`SSE: print order handled successfully`, result);
-            } else {
-              console.error(`SSE: print order failed:`, result.error);
-            }
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(`SSE: retry ${attempt}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+    }
+
+    const cookie: string | undefined = (global as any).__AUTH_COOKIE;
+    console.log(`SSE: connecting to ${url} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+
+    let closedNormally = false;
+
+    try {
+      await fetchEventSource(url, {
+        openWhenHidden: true,
+        method: 'GET',
+        fetch: fetch,
+        headers: {
+          Accept: 'text/event-stream',
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        async onopen(response) {
+          if (response.ok) {
+            console.log('SSE connected successfully');
           } else {
-            console.log(`SSE: ignoring event type '${eventType}'`);
+            console.error('SSE connection failed:', response.status, response.statusText);
           }
-        } catch (err) {
-          console.error('SSE: failed to handle event', err);
-        }
-      },
-      onclose() {
-        console.log('SSE connection closed');
-      },
-      onerror(err) {
-        console.error('SSE error:', err);
-        throw err;
-      },
-    });
-  } catch (err) {
-    console.error('SSE: error establishing connection', err);
+        },
+        async onmessage(event) {
+          try {
+            if (!event.data) return;
+            const payload = JSON.parse(event.data);
+            const eventType = event.event ?? '';
+            console.log(`SSE received event (type=${eventType}):`, payload);
+
+            if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
+              // Call the print handler directly instead of making an HTTP request
+              const result = await handlePrintOrder(payload, printers);
+              if (result.ok) {
+                console.log(`SSE: print order handled successfully`, result);
+              } else {
+                console.error(`SSE: print order failed:`, result.error);
+              }
+            } else {
+              console.log(`SSE: ignoring event type '${eventType}'`);
+            }
+          } catch (err) {
+            console.error('SSE: failed to handle event', err);
+          }
+        },
+        onclose() {
+          console.log('SSE connection closed');
+          closedNormally = true;
+        },
+        onerror(err) {
+          console.error('SSE error:', err);
+          throw err;
+        },
+      });
+    } catch (err) {
+      console.error('SSE: connection lost:', err);
+    }
+
+    if (attempt < MAX_RETRIES) {
+      console.log(`SSE: will retry (${attempt + 1}/${MAX_RETRIES} retries used)`);
+    } else {
+      console.error('SSE: max retries reached, giving up reconnection attempts');
+    }
   }
 }
 

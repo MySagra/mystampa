@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MyStampa - Login</title>
+  <link rel="icon" type="image/x-icon" href="/assets/favicon.ico">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -146,7 +147,7 @@
 
     .input-group input {
       flex: 1;
-      width: 100%;
+      min-width: 0;
       padding: 0.625rem 0.875rem;
       border: 1px solid var(--input-border);
       border-radius: var(--radius);
@@ -168,10 +169,7 @@
     }
 
     .input-group .toggle-password {
-      position: absolute;
-      right: 0;
-      top: 0;
-      bottom: 0;
+      flex-shrink: 0;
       width: 42px;
       background: none;
       border: 1px solid var(--input-border);
@@ -191,7 +189,6 @@
     }
 
     .input-group.has-toggle input {
-      padding-right: 46px;
       border-top-right-radius: 0;
       border-bottom-right-radius: 0;
     }
