@@ -1,18 +1,14 @@
 /**
- * Route handler for the `/print` endpoint.
+ * Print handler for the mystampa service.
  *
- * This implementation reflects the updated business logic for the
- * `mystampa` service. Instead of using preloaded categories to find
- * printers, it queries the external API on‑the‑fly for each food
- * item to determine its associated kitchen printer. It also looks
- * up the cash register printer via a dedicated API call. Items are
- * aggregated per printer and a separate receipt is generated for
- * kitchen and cash printers. Receipts include order metadata and
- * blank space above and below to ensure thermal printers advance
- * the paper.
+ * This module exports a standalone function `handlePrintOrder` that
+ * contains the business logic for processing incoming orders.
+ * It queries the external API for each food item to determine its
+ * associated kitchen printer, looks up the cash register printer,
+ * aggregates items per printer and generates separate receipts for
+ * kitchen and cash printers.
  */
 
-import { Router, Request, Response } from "express";
 import axiosInstance from "../utils/axiosInstance";
 import {
   IncomingOrder,
@@ -30,11 +26,9 @@ import {
   CashReceiptLine,
 } from "../utils/printer";
 
-const router = Router();
-
 // Keep a progress counter for each printer. Each time a kitchen receipt
 // is generated for a printer the counter increments. This map lives
-// within the module scope so values persist across requests while the
+// within the module scope so values persist across calls while the
 // server is running.
 const progressCounters: { [printerId: string]: number } = {};
 
@@ -61,14 +55,6 @@ async function safePrint(printerId: string, ip: string, port: number, data: (str
     console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue:`, statusErr);
     printQueue.add(printerId, ip, port, data);
   }
-}
-
-/**
- * Extend Express Request to optionally include the cached list of
- * printers from initialization.
- */
-interface PrintRequest extends Request {
-  printers?: Printer[];
 }
 
 /**
@@ -103,33 +89,44 @@ function toNumber(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+export interface PrintResult {
+  ok: boolean;
+  kitchenPrinters: string[];
+  cashPrinterId: string;
+  error?: string;
+}
+
 /**
- * POST /print
+ * Handle an incoming print order. This is the main business logic
+ * function that replaces the old POST /print route handler.
  *
- * Receives an order payload and produces receipts for the kitchen
- * printers associated with each food item and a separate receipt
- * for the cash register printer. Each food is looked up via the
- * external API to determine its kitchen printer and price. Items are
- * grouped by printer ID and printed together. The cash receipt
- * includes unit prices and a final total minus any discount. When
- * printers cannot be resolved, receipts are logged to the console
- * instead of sent over the network.
+ * @param order The incoming order payload
+ * @param printers The cached list of printers
+ * @returns PrintResult with status information
  */
-router.post("/", async (req: PrintRequest, res: Response) => {
-  const order = req.body as IncomingOrder;
+export async function handlePrintOrder(
+  order: IncomingOrder,
+  printers: Printer[]
+): Promise<PrintResult> {
   if (!order || !Array.isArray(order.orderItems)) {
-    return res
-      .status(400)
-      .json({ error: "Invalid payload: missing orderItems[]" });
+    return {
+      ok: false,
+      kitchenPrinters: [],
+      cashPrinterId: "",
+      error: "Invalid payload: missing orderItems[]",
+    };
   }
 
   const EXTERNAL_BASE_URL: string =
     process.env.EXTERNAL_BASE_URL || "http://localhost:4300";
   const cookie: string | undefined = (global as any).__AUTH_COOKIE;
   if (!cookie) {
-    return res
-      .status(500)
-      .json({ error: "Missing auth cookie (login not completed)" });
+    return {
+      ok: false,
+      kitchenPrinters: [],
+      cashPrinterId: "",
+      error: "Missing auth cookie (login not completed)",
+    };
   }
 
   // Aggregation map for kitchen receipts keyed by printerId
@@ -172,7 +169,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
         );
         foodDetails.set(fId, r.data);
       } catch (e) {
-        console.error(`[Print Route] Failed to fetch food details for ${fId}`, e);
+        console.error(`[Print] Failed to fetch food details for ${fId}`, e);
       }
     }));
   }
@@ -255,9 +252,6 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     }
   }
 
-  // Retrieve cached printers from middleware
-  const printers = req.printers || [];
-
   /**
    * Resolve a printer by ID. If the cash register response included
    * embedded printer details (ip/port) for this printerId, those
@@ -308,7 +302,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
   // Print receipt for cash register printer.
   // When reprintReceipt is explicitly false the fiscal receipt is skipped.
   if (order.reprintReceipt === false) {
-    console.log("[Print Route] reprintReceipt=false, skipping cash receipt");
+    console.log("[Print] reprintReceipt=false, skipping cash receipt");
   } else if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
@@ -323,11 +317,10 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     console.log("NO cashRegister printerId found");
     console.log(await buildCashReceipt(order, cashLines, singleTickets));
   }
-  return res.json({
+
+  return {
     ok: true,
     kitchenPrinters: Array.from(kitchenByPrinterId.keys()),
     cashPrinterId: cashRegisterPrinterId,
-  });
-});
-
-export default router;
+  };
+}
