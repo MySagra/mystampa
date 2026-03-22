@@ -16,9 +16,6 @@ import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder } from './routes/print';
 
-// Import the SSE client. This library allows connection to Server‑Sent
-// Events endpoints from Node.js.
-import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 dotenv.config();
 
@@ -63,55 +60,67 @@ async function startSSE(): Promise<void> {
     const cookie: string | undefined = (global as any).__AUTH_COOKIE;
     console.log(`SSE: connecting to ${url} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
 
-    let closedNormally = false;
-
     try {
-      await fetchEventSource(url, {
-        openWhenHidden: true,
-        method: 'GET',
-        fetch: fetch,
+      const response = await fetch(url, {
         headers: {
           Accept: 'text/event-stream',
           ...(cookie ? { Cookie: cookie } : {}),
         },
-        async onopen(response) {
-          if (response.ok) {
-            console.log('SSE connected successfully');
-          } else {
-            console.error('SSE connection failed:', response.status, response.statusText);
-          }
-        },
-        async onmessage(event) {
-          try {
-            if (!event.data) return;
-            const payload = JSON.parse(event.data);
-            const eventType = event.event ?? '';
-            console.log(`SSE received event (type=${eventType}):`, payload);
-
-            if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
-              // Call the print handler directly instead of making an HTTP request
-              const result = await handlePrintOrder(payload, printers);
-              if (result.ok) {
-                console.log(`SSE: print order handled successfully`, result);
-              } else {
-                console.error(`SSE: print order failed:`, result.error);
-              }
-            } else {
-              console.log(`SSE: ignoring event type '${eventType}'`);
-            }
-          } catch (err) {
-            console.error('SSE: failed to handle event', err);
-          }
-        },
-        onclose() {
-          console.log('SSE connection closed');
-          closedNormally = true;
-        },
-        onerror(err) {
-          console.error('SSE error:', err);
-          throw err;
-        },
       });
+
+      if (!response.ok || !response.body) {
+        console.error(`SSE connection failed: ${response.status} ${response.statusText}`);
+      } else {
+        console.log('SSE connected successfully');
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+
+          let eventType = '';
+          let eventData = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            } else if (line.startsWith('data:')) {
+              eventData = line.slice(5).trim();
+            } else if (line === '') {
+              if (eventData) {
+                try {
+                  const payload = JSON.parse(eventData);
+                  console.log(`SSE received event (type=${eventType}):`, payload);
+
+                  if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
+                    const result = await handlePrintOrder(payload, printers);
+                    if (result.ok) {
+                      console.log('SSE: print order handled successfully', result);
+                    } else {
+                      console.error('SSE: print order failed:', result.error);
+                    }
+                  } else {
+                    console.log(`SSE: ignoring event type '${eventType}'`);
+                  }
+                } catch (err) {
+                  console.error('SSE: failed to handle event', err);
+                }
+              }
+              eventType = '';
+              eventData = '';
+            }
+          }
+        }
+
+        console.log('SSE connection closed');
+      }
     } catch (err) {
       console.error('SSE: connection lost:', err);
     }
