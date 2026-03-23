@@ -417,6 +417,73 @@
       color: var(--text-muted);
       text-align: right;
     }
+
+    /* Table scroll wrapper */
+    .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* ── Mobile responsive ── */
+    @media (max-width: 600px) {
+      .header {
+        padding: 0 1rem;
+      }
+
+      .header-title {
+        font-size: 0.95rem;
+      }
+
+      .content {
+        padding: 1rem 0.75rem;
+      }
+
+      .settings-card {
+        padding: 1.25rem 1rem;
+        margin-bottom: 1rem;
+      }
+
+      .card-description {
+        padding-left: 0;
+        margin-top: 0.5rem;
+      }
+
+      .category-table th,
+      .category-table td {
+        padding: 0.6rem 0.5rem;
+        font-size: 0.82rem;
+      }
+
+      .printer-ip {
+        font-size: 0.75rem;
+      }
+
+      .toast {
+        left: 1rem;
+        right: 1rem;
+        bottom: 1rem;
+        text-align: center;
+      }
+
+      .save-bar {
+        margin-top: 1rem;
+      }
+
+      .btn-save {
+        width: 100%;
+        justify-content: center;
+      }
+
+      .last-updated {
+        text-align: left;
+      }
+
+      /* Nascondi colonna Descrizione stampanti su mobile */
+      #printersContainer .category-table th:nth-child(3),
+      #printersContainer .category-table td:nth-child(3) {
+        display: none;
+      }
+    }
   </style>
 </head>
 
@@ -565,7 +632,7 @@
         html += '</tr>';
       }
       html += '</tbody></table>';
-      container.innerHTML = html;
+      container.innerHTML = '<div class="table-scroll">' + html + '</div>';
 
       var now = new Date();
       var updatedEl = document.getElementById('printersUpdatedAt');
@@ -654,7 +721,7 @@
       }
 
       html += '</tbody></table>';
-      document.getElementById('categoriesContainer').innerHTML = html;
+      document.getElementById('categoriesContainer').innerHTML = '<div class="table-scroll">' + html + '</div>';
       document.getElementById('saveBar').style.display = 'flex';
     }
 
