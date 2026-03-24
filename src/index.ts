@@ -17,7 +17,7 @@ import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder } from './routes/print';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
-import { patchPrinterIp } from './utils/api';
+import { patchPrinterIp, patchPrinterStatus } from './utils/api';
 
 
 dotenv.config();
@@ -257,36 +257,6 @@ function probePrinterStatusOnce(ip: string, port: number, timeoutMs = 3000): Pro
 }
 
 /**
- * Patch the printer status on the external API using the API key.
- */
-async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR', retries = 2): Promise<void> {
-  for (let attempt = 1; attempt <= retries + 1; attempt++) {
-    try {
-      await axiosInstance.patch(
-        `${API_URL}/v1/printers/${printerId}`,
-        { status },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            'X-API-KEY': API_KEY,
-          },
-        }
-      );
-      console.log(`patchPrinterStatus: printer ${printerId} → ${status}`);
-      return;
-    } catch (err: any) {
-      if (attempt <= retries) {
-        console.warn(`patchPrinterStatus: attempt ${attempt} failed for ${printerId}, retrying in ${attempt}s...`);
-        await new Promise((r) => setTimeout(r, attempt * 1000));
-      } else {
-        console.error(`patchPrinterStatus: all attempts failed for printer ${printerId}:`, err.message);
-      }
-    }
-  }
-}
-
-/**
  * Probe all cached printers and update their status.
  *
  * - ERROR (paper out): always PATCH immediately so the backend is
@@ -386,6 +356,18 @@ app.get('/', (req: Request, res: Response) => {
   res.render('login', { error: null });
 });
 
+const ALLOWED_ROLES = ['admin', 'maintainer'];
+
+/**
+ * Check that the request has a valid session cookie and an allowed role cookie.
+ * Returns true if authorized, false otherwise.
+ */
+function isAuthorized(req: Request): boolean {
+  const token = req.cookies?.mystampa_session;
+  const role = req.cookies?.mystampa_role;
+  return !!(token && role && ALLOWED_ROLES.includes(role));
+}
+
 /**
  * POST /login - Handle login form submission
  */
@@ -418,12 +400,19 @@ app.post('/login', async (req: Request, res: Response) => {
       return res.render('login', { error: 'Login riuscito ma token non trovato nella risposta' });
     }
 
-    res.cookie('mystampa_session', tokenValue, {
+    const role: string = resp.data?.role ?? '';
+    if (!ALLOWED_ROLES.includes(role)) {
+      return res.render('login', { error: 'Accesso negato: ruolo non autorizzato' });
+    }
+
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      sameSite: 'lax' as const,
       maxAge: 6 * 60 * 60 * 1000,
-    });
+    };
+    res.cookie('mystampa_session', tokenValue, cookieOptions);
+    res.cookie('mystampa_role', role, cookieOptions);
 
     return res.redirect('/config');
   } catch (err: any) {
@@ -434,12 +423,14 @@ app.post('/login', async (req: Request, res: Response) => {
 });
 
 /**
- * GET /config - Configuration page (requires login)
+ * GET /config - Configuration page (requires admin or maintainer role)
  */
 app.get('/config', (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) {
+  if (!req.cookies?.mystampa_session) {
     return res.redirect('/');
+  }
+  if (!isAuthorized(req)) {
+    return res.status(403).render('login', { error: 'Accesso negato: ruolo non autorizzato' });
   }
   res.render('config');
 });
@@ -478,9 +469,8 @@ async function writeConfig(config: { singleTicketCategories: string[] }): Promis
  */
 app.get('/api/categories', async (req: Request, res: Response) => {
   const token = req.cookies?.mystampa_session;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   try {
     const resp = await axios.get(`${API_URL}/v1/categories`, {
       timeout: 10000,
@@ -497,10 +487,8 @@ app.get('/api/categories', async (req: Request, res: Response) => {
  * GET /api/printers - Return in-memory printers list with live status
  */
 app.get('/api/printers', (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   return res.json(printers.map((p) => ({
     id: p.id,
     name: p.name,
@@ -516,10 +504,8 @@ app.get('/api/printers', (req: Request, res: Response) => {
  * GET /api/config - Get current config
  */
 app.get('/api/config', async (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   return res.json(await readConfig());
 });
 
@@ -527,10 +513,8 @@ app.get('/api/config', async (req: Request, res: Response) => {
  * POST /api/config - Save config
  */
 app.post('/api/config', async (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   const { singleTicketCategories } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
@@ -550,6 +534,7 @@ app.post('/api/config', async (req: Request, res: Response) => {
  */
 app.post('/logout', (_req: Request, res: Response) => {
   res.clearCookie('mystampa_session');
+  res.clearCookie('mystampa_role');
   res.redirect('/');
 });
 

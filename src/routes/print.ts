@@ -29,7 +29,7 @@ import {
   CashReceiptLine,
 } from "../utils/printer";
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
-import { patchPrinterIp } from "../utils/api";
+import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 
 // Keep a progress counter for each printer. Each time a kitchen receipt
 // is generated for a printer the counter increments. This map lives
@@ -41,7 +41,7 @@ const progressCounters: { [printerId: string]: number } = {};
  * Safe print helper: checks paper status before printing.
  * If paper is out or any error occurs, the job is added to the print queue.
  */
-async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer, mac?: string | null) {
+async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer, mac?: string | null, printers?: Printer[]) {
   // Prefer IP; if not available resolve from MAC
   const primaryIp = resolveEffectiveIp(ip, mac);
   if (!primaryIp) {
@@ -87,6 +87,13 @@ async function safePrint(printerId: string, ip: string, port: number, data: (str
     try {
       await sendToPrinter(targetIp, port, data);
       console.log(`[SafePrint] Printed successfully to ${printerId} (${targetIp}:${port})`);
+      // If the printer was not ONLINE in the DB, patch it now that we know it's reachable
+      const cached = printers?.find((p) => p.id === printerId);
+      if (cached && cached.status !== 'ONLINE') {
+        console.log(`[SafePrint] Printer ${printerId} was ${cached.status} but printed successfully — patching to ONLINE`);
+        cached.status = 'ONLINE';
+        patchPrinterStatus(printerId, 'ONLINE').catch(() => {});
+      }
     } catch (printErr) {
       console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
       printQueue.add(printerId, ip || primaryIp, port, data, mac);
@@ -323,7 +330,7 @@ export async function handlePrintOrder(
     const receipt = buildKitchenReceipt(order, lines, prog);
     progressCounters[printerId] = prog + 1;
     if (pr) {
-      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt, pr.mac));
+      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {
       console.log("NO PRINTER for kitchen printerId=", printerId);
       console.log(receipt);
@@ -338,7 +345,7 @@ export async function handlePrintOrder(
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {
-      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac));
+      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);
