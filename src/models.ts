@@ -60,7 +60,8 @@ export class Printer {
     public ip: string,
     public port: number,
     public description: string | null = null,
-    public status: string = 'UNKNOWN'
+    public status: string = 'UNKNOWN',
+    public mac: string | null = null
   ) { }
 
   /**
@@ -72,7 +73,9 @@ export class Printer {
     // Normalize and trim values to remove unexpected whitespace and locale formatting.
     const name: string = data.name ? String(data.name).trim() : '';
     const ip: string = data.ip ? String(data.ip).trim() : '';
-    // Port may be a string with dots (e.g. "9.100") or whitespace, remove dots and trim.
+    // Port may be a string with dots used as thousand separators in Italian locale
+    // (e.g. "9.100" → 9100). All dots are intentionally removed before parsing.
+    // Legitimate port numbers never contain dots, so this is safe.
     let portValue: number;
     if (typeof data.port === 'string') {
       const cleaned = data.port.toString().trim().replace(/\./g, '');
@@ -80,13 +83,15 @@ export class Printer {
     } else {
       portValue = data.port;
     }
+    const mac: string | null = data.mac ? String(data.mac).trim() : null;
     return new Printer(
       data.id,
       name,
       ip,
       portValue,
       data.description ?? null,
-      data.status ?? 'UNKNOWN'
+      data.status ?? 'UNKNOWN',
+      mac
     );
   }
 }
@@ -178,6 +183,7 @@ export interface OrderItemIn {
     id: string;
     name: string;
     printerId?: string | null;
+    categoryId?: string | null;
   };
 }
 
@@ -258,6 +264,7 @@ export interface CashRegisterFromApi {
     ip?: string | null;
     port?: number | string | null;
     name?: string | null;
+    mac?: string | null;
   } | null;
 }
 

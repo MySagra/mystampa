@@ -28,6 +28,8 @@ import {
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
+import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
+import { patchPrinterIp } from "../utils/api";
 
 // Keep a progress counter for each printer. Each time a kitchen receipt
 // is generated for a printer the counter increments. This map lives
@@ -39,24 +41,59 @@ const progressCounters: { [printerId: string]: number } = {};
  * Safe print helper: checks paper status before printing.
  * If paper is out or any error occurs, the job is added to the print queue.
  */
-async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer) {
+async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer, mac?: string | null) {
+  // Prefer IP; if not available resolve from MAC
+  const primaryIp = resolveEffectiveIp(ip, mac);
+  if (!primaryIp) {
+    console.error(`[SafePrint] No address available for printer ${printerId}`);
+    return;
+  }
+
+  let targetIp = primaryIp;
+  let status = 'UNKNOWN';
+
   try {
-    const status = await getPrinterStatus(ip, port);
-    if (status === "OK" || status === "CARTA_QUASI_FINITA") {
-      try {
-        await sendToPrinter(ip, port, data);
-        console.log(`[SafePrint] Printed successfully to ${printerId}`);
-      } catch (printErr) {
-        console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
-        printQueue.add(printerId, ip, port, data);
+    status = await getPrinterStatus(targetIp, port);
+  } catch (err) {
+    console.warn(`[SafePrint] getPrinterStatus failed for ${printerId} at ${targetIp}:${port}:`, err);
+    // Connection to IP failed — if we have both IP and MAC, try MAC-resolved IP
+    if (ip && mac) {
+      const macIp = resolveIpFromMac(mac);
+      if (macIp && macIp !== targetIp) {
+        console.log(`[SafePrint] IP ${targetIp} unreachable, retrying with MAC-resolved IP ${macIp}`);
+        try {
+          status = await getPrinterStatus(macIp, port);
+          targetIp = macIp;
+          // IP changed — update DB asynchronously (don't block printing)
+          patchPrinterIp(printerId, macIp);
+        } catch {
+          console.error(`[SafePrint] Both IP and MAC-resolved IP failed for ${printerId}, adding to queue.`);
+          printQueue.add(printerId, ip, port, data, mac);
+          return;
+        }
+      } else {
+        console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+        printQueue.add(printerId, ip, port, data, mac);
+        return;
       }
     } else {
-      console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
-      printQueue.add(printerId, ip, port, data);
+      console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+      printQueue.add(printerId, primaryIp, port, data, mac);
+      return;
     }
-  } catch (statusErr) {
-    console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue:`, statusErr);
-    printQueue.add(printerId, ip, port, data);
+  }
+
+  if (status === "OK" || status === "CARTA_QUASI_FINITA") {
+    try {
+      await sendToPrinter(targetIp, port, data);
+      console.log(`[SafePrint] Printed successfully to ${printerId} (${targetIp}:${port})`);
+    } catch (printErr) {
+      console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
+      printQueue.add(printerId, ip || primaryIp, port, data, mac);
+    }
+  } else {
+    console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
+    printQueue.add(printerId, ip || primaryIp, port, data, mac);
   }
 }
 
@@ -203,7 +240,7 @@ export async function handlePrintOrder(
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
 
-    const categoryId = apiFood?.categoryId ?? (it.food as any)?.categoryId;
+    const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
     if (categoryId && targetCategoryIds.includes(String(categoryId))) {
       singleTickets.push({ foodName, quantity: qty, notes });
     }
@@ -215,6 +252,7 @@ export async function handlePrintOrder(
     id: string;
     ip?: string | null;
     port?: any;
+    mac?: string | null;
   } | null = null;
   if (order.cashRegisterId !== null && order.cashRegisterId !== undefined) {
     const crId = trimStr(order.cashRegisterId);
@@ -236,6 +274,7 @@ export async function handlePrintOrder(
           id: r.data.defaultPrinter.id,
           ip: r.data.defaultPrinter.ip,
           port: r.data.defaultPrinter.port,
+          mac: r.data.defaultPrinter.mac ?? null,
         }
         : null;
     } catch (e) {
@@ -251,7 +290,7 @@ export async function handlePrintOrder(
    */
   function resolvePrinter(
     printerId: string,
-  ): { id: string; ip: string; port: number } | null {
+  ): { id: string; ip: string; port: number; mac: string | null } | null {
     const pid = trimStr(printerId);
     if (!pid) return null;
     // If the embedded printer is available and matches this id, use it
@@ -261,15 +300,17 @@ export async function handlePrintOrder(
     ) {
       const ip = trimStr(cashRegisterPrinterEmbedded.ip);
       const port = parsePort(cashRegisterPrinterEmbedded.port);
-      if (ip && port > 0) return { id: pid, ip, port };
+      const mac = cashRegisterPrinterEmbedded.mac ? String(cashRegisterPrinterEmbedded.mac).trim() : null;
+      if ((ip || mac) && port > 0) return { id: pid, ip, port, mac };
     }
     // Fallback to cached printers
-    const p = printers.find((x) => trimStr((x as any).id) === pid);
+    const p = printers.find((x) => trimStr(x.id) === pid);
     if (!p) return null;
     return {
       id: pid,
-      ip: trimStr((p as any).ip),
-      port: parsePort((p as any).port),
+      ip: trimStr(p.ip),
+      port: parsePort(p.port),
+      mac: p.mac ? String(p.mac).trim() : null,
     };
   }
 
@@ -282,7 +323,7 @@ export async function handlePrintOrder(
     const receipt = buildKitchenReceipt(order, lines, prog);
     progressCounters[printerId] = prog + 1;
     if (pr) {
-      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt));
+      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt, pr.mac));
     } else {
       console.log("NO PRINTER for kitchen printerId=", printerId);
       console.log(receipt);
@@ -297,17 +338,21 @@ export async function handlePrintOrder(
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {
-      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt));
+      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac));
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);
     }
   } else {
-    console.log("NO cashRegister printerId found");
-    console.log(await buildCashReceipt(order, cashLines, singleTickets));
+    console.log("NO cashRegister printerId found, skipping cash receipt");
   }
 
-  await Promise.all(printJobs);
+  const settled = await Promise.allSettled(printJobs);
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.error('[Print] A print job failed unexpectedly:', result.reason);
+    }
+  }
 
   return {
     ok: true,

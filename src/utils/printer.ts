@@ -78,14 +78,6 @@ function eur(n: number): string {
 }
 
 /**
- * Generate a blank space string consisting of `n` newline characters.
- * Useful for adding padding above or below a receipt.
- */
-function blank(n = 6): string {
-  return '\n'.repeat(n);
-}
-
-/**
  * Word wraps a string to a specific maximum width.
  * Returns an array of strings, each at most `maxWidth` characters.
  * It attempts to break the string at word boundaries.
@@ -307,8 +299,6 @@ export async function buildCashReceipt(
     return `${s}€`;
   };
 
-  const blankLines = (n: number) => repeat("\n", Math.max(0, n)).trimEnd(); // oppure usa la tua blank()
-
   // =========================
   // HEADER
   // =========================
@@ -441,6 +431,8 @@ export async function buildCashReceipt(
       });
       if (logoBuf.length > 0) {
         parts.push(logoBuf);
+      } else {
+        console.warn(`[Printer] Logo at ${logoPath} returned empty buffer, skipping.`);
       }
       break;
     }
@@ -465,6 +457,8 @@ export async function buildCashReceipt(
     });
     if (mysagraFooterBuf.length > 0) {
       parts.push(mysagraFooterBuf);
+    } else {
+      console.warn(`[Printer] Footer image at ${mysagraPath} returned empty buffer, skipping.`);
     }
   }
 
@@ -556,15 +550,32 @@ export async function sendToPrinter(
 
   return new Promise((resolve, reject) => {
     const client = new net.Socket();
+    let settled = false;
+
+    const overallTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.destroy();
+        reject(new Error(`Timeout: printer ${ipClean}:${portClean} did not respond`));
+      }
+    }, 5000);
 
     client.connect(portClean, ipClean, () => {
       client.write(payload, () => {
+        clearTimeout(overallTimeout);
+        settled = true;
         client.end();
         resolve();
       });
     });
 
-    client.on("error", reject);
+    client.on("error", (err) => {
+      clearTimeout(overallTimeout);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -606,8 +617,9 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
       const paperEnded = (statusByte & 0x60) === 0x60;
       const paperLow = (statusByte & 0x0C) === 0x0C;
 
-      client.end();
-      client.removeListener("error", onError); // Cleanup listener
+      // Rimuovi il listener prima di destroy per evitare eventi 'error' non gestiti
+      client.removeListener("error", onError);
+      client.destroy();
 
       console.log("Carta finita: ", paperEnded);
       console.log("Carta quasi finita: ", paperLow);

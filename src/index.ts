@@ -16,6 +16,8 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder } from './routes/print';
+import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
+import { patchPrinterIp } from './utils/api';
 
 
 dotenv.config();
@@ -36,86 +38,107 @@ let printers: Printer[] = [];
  */
 async function startSSE(): Promise<void> {
   const url = `${API_URL}/events/printer`;
-  const MAX_RETRIES = 6;
-  const RETRY_DELAY_MS = 30_000;
+  const BASE_DELAY_MS = 5_000;
+  const MAX_DELAY_MS = 120_000;
+  const CONNECT_TIMEOUT_MS = 30_000;
+  const MAX_BUFFER_SIZE = 1024 * 1024; // 1 MB guard against malformed/huge events
+  let attempt = 0;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  // Infinite retry loop with exponential backoff — never gives up
+  while (true) {
     if (attempt > 0) {
-      console.log(`SSE: retry ${attempt}/${MAX_RETRIES} in ${RETRY_DELAY_MS / 1000}s...`);
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+      const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS);
+      console.log(`SSE: retry ${attempt} in ${delay / 1000}s...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    console.log(`SSE: connecting to ${url} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+    attempt++;
+    console.log(`SSE: connecting to ${url} (attempt ${attempt})`);
+
+    const controller = new AbortController();
+    // Abort if the server accepts the TCP connection but never sends HTTP headers
+    const connectTimeout = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
+        signal: controller.signal,
         headers: {
           Accept: 'text/event-stream',
           'X-API-KEY': API_KEY,
         },
       });
+      clearTimeout(connectTimeout); // headers received — connection established
 
       if (!response.ok || !response.body) {
         console.error(`SSE connection failed: ${response.status} ${response.statusText}`);
       } else {
         console.log('SSE connected successfully');
+        attempt = 0; // reset backoff counter on successful connection
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
+            buffer += decoder.decode(value, { stream: true });
 
-          let eventType = '';
-          let eventData = '';
+            // Guard against unbounded buffer growth from malformed events
+            if (buffer.length > MAX_BUFFER_SIZE) {
+              console.error('SSE: buffer exceeded limit (malformed event?), resetting connection');
+              break;
+            }
 
-          for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.slice(6).trim();
-            } else if (line.startsWith('data:')) {
-              eventData = line.slice(5).trim();
-            } else if (line === '') {
-              if (eventData) {
-                try {
-                  const payload = JSON.parse(eventData);
-                  console.log(`SSE received event (type=${eventType}):`, payload);
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
 
-                  if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
-                    const result = await handlePrintOrder(payload, printers);
-                    if (result.ok) {
-                      console.log('SSE: print order handled successfully', result);
+            let eventType = '';
+            let eventData = '';
+
+            for (const line of lines) {
+              if (line.startsWith('event:')) {
+                eventType = line.slice(6).trim();
+              } else if (line.startsWith('data:')) {
+                const chunk = line.slice(5).trim();
+                eventData = eventData ? eventData + '\n' + chunk : chunk;
+              } else if (line === '') {
+                if (eventData) {
+                  try {
+                    const payload = JSON.parse(eventData);
+                    console.log(`SSE received event (type=${eventType}):`, payload);
+
+                    if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
+                      const result = await handlePrintOrder(payload, printers);
+                      if (result.ok) {
+                        console.log('SSE: print order handled successfully', result);
+                      } else {
+                        console.error('SSE: print order failed:', result.error);
+                      }
                     } else {
-                      console.error('SSE: print order failed:', result.error);
+                      console.log(`SSE: ignoring event type '${eventType}'`);
                     }
-                  } else {
-                    console.log(`SSE: ignoring event type '${eventType}'`);
+                  } catch (err) {
+                    console.error('SSE: failed to handle event', err);
                   }
-                } catch (err) {
-                  console.error('SSE: failed to handle event', err);
                 }
+                eventType = '';
+                eventData = '';
               }
-              eventType = '';
-              eventData = '';
             }
           }
+        } finally {
+          // Always release the reader to avoid resource leaks
+          reader.cancel().catch(() => {});
         }
 
-        console.log('SSE connection closed');
+        console.log('SSE connection closed, will reconnect');
       }
     } catch (err) {
-      console.error('SSE: connection lost:', err);
-    }
-
-    if (attempt < MAX_RETRIES) {
-      console.log(`SSE: will retry (${attempt + 1}/${MAX_RETRIES} retries used)`);
-    } else {
-      console.error('SSE: max retries reached, giving up reconnection attempts');
+      clearTimeout(connectTimeout);
+      console.error('SSE: connection error:', err);
     }
   }
 }
@@ -149,14 +172,20 @@ async function initialize(): Promise<void> {
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
   runPrinterStatusCheck();
 
-  // Refresh printers every 2 minutes (120000 ms)
+  // Refresh printers every 2 minutes (120000 ms).
+  // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
+  let isUpdatingPrinters = false;
   setInterval(async () => {
+    if (isUpdatingPrinters) return;
+    isUpdatingPrinters = true;
     try {
       printers = await fetchPrinters();
       console.log('Printers updated via polling.');
       await runPrinterStatusCheck();
     } catch (e) {
       console.error('Failed to update printers:', e);
+    } finally {
+      isUpdatingPrinters = false;
     }
   }, 120000);
 
@@ -174,7 +203,7 @@ async function initialize(): Promise<void> {
  *   the printer has no paper → ERROR. Otherwise → ONLINE.
  * - If the printer does not reply (e.g. non-ESC/POS device) we assume ONLINE.
  */
-function probePrinterStatus(ip: string, port: number, timeoutMs = 3000): Promise<'ONLINE' | 'OFFLINE' | 'ERROR'> {
+function probePrinterStatusOnce(ip: string, port: number, timeoutMs = 3000): Promise<'ONLINE' | 'OFFLINE' | 'ERROR'> {
   return new Promise((resolve) => {
     if (!ip || !port || isNaN(port)) {
       resolve('OFFLINE');
@@ -200,9 +229,14 @@ function probePrinterStatus(ip: string, port: number, timeoutMs = 3000): Promise
       setTimeout(() => {
         if (responseData.length > 0) {
           const byte = responseData[0];
-          // Bits 5-6 (mask 0x60) indicate no paper present
-          if ((byte & 0x60) !== 0) {
+          // Bit 5 e 6 entrambi settati (0x60) → carta finita (allineato con getPrinterStatus)
+          const paperEnded = (byte & 0x60) === 0x60;
+          // Bit 2 e 3 entrambi settati (0x0C) → carta quasi finita, ma ancora funzionante
+          const paperLow = (byte & 0x0C) === 0x0C;
+          if (paperEnded) {
             finish('ERROR'); // paper out
+          } else if (paperLow) {
+            finish('ONLINE'); // carta bassa, ma la stampante è ancora funzionante
           } else {
             finish('ONLINE');
           }
@@ -225,22 +259,30 @@ function probePrinterStatus(ip: string, port: number, timeoutMs = 3000): Promise
 /**
  * Patch the printer status on the external API using the API key.
  */
-async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR'): Promise<void> {
-  try {
-    await axiosInstance.patch(
-      `${API_URL}/v1/printers/${printerId}`,
-      { status },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'X-API-KEY': API_KEY,
-        },
+async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR', retries = 2): Promise<void> {
+  for (let attempt = 1; attempt <= retries + 1; attempt++) {
+    try {
+      await axiosInstance.patch(
+        `${API_URL}/v1/printers/${printerId}`,
+        { status },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'X-API-KEY': API_KEY,
+          },
+        }
+      );
+      console.log(`patchPrinterStatus: printer ${printerId} → ${status}`);
+      return;
+    } catch (err: any) {
+      if (attempt <= retries) {
+        console.warn(`patchPrinterStatus: attempt ${attempt} failed for ${printerId}, retrying in ${attempt}s...`);
+        await new Promise((r) => setTimeout(r, attempt * 1000));
+      } else {
+        console.error(`patchPrinterStatus: all attempts failed for printer ${printerId}:`, err.message);
       }
-    );
-    console.log(`patchPrinterStatus: printer ${printerId} → ${status}`);
-  } catch (err: any) {
-    console.error(`patchPrinterStatus: failed for printer ${printerId}:`, err.message);
+    }
   }
 }
 
@@ -256,19 +298,36 @@ async function runPrinterStatusCheck(): Promise<void> {
   if (printers.length === 0) return;
   console.log(`Printer status check: probing ${printers.length} printer(s)...`);
   for (const printer of printers) {
-    const probed = await probePrinterStatus(printer.ip, printer.port);
+    const primaryIp = resolveEffectiveIp(printer.ip, printer.mac) ?? printer.ip;
+    let probed = await probePrinterStatusOnce(primaryIp, printer.port);
+
+    // If OFFLINE and we have both IP and MAC, the IP may have changed (DHCP).
+    // Try resolving the current IP from the ARP table and retry once.
+    if (probed === 'OFFLINE' && printer.mac && printer.ip) {
+      const macIp = resolveIpFromMac(printer.mac);
+      if (macIp && macIp !== primaryIp) {
+        console.log(`Printer "${printer.name}": IP ${primaryIp} offline, retrying with MAC-resolved IP ${macIp}`);
+        probed = await probePrinterStatusOnce(macIp, printer.port);
+        if (probed !== 'OFFLINE') {
+          // IP changed — update DB and in-memory record
+          console.log(`Printer "${printer.name}": IP updated ${printer.ip} → ${macIp}`);
+          printer.ip = macIp;
+          await patchPrinterIp(printer.id, macIp);
+        }
+      }
+    }
+
+    const addr = printer.mac ? `MAC:${printer.mac} (${printer.ip})` : `${printer.ip}:${printer.port}`;
     if (probed === 'ERROR') {
-      // Paper out — always notify the backend immediately
-      console.log(`Printer "${printer.name}" (${printer.ip}:${printer.port}): paper out → ERROR`);
+      console.log(`Printer "${printer.name}" (${addr}): paper out → ERROR`);
       printer.status = 'ERROR';
       await patchPrinterStatus(printer.id, 'ERROR');
     } else if (probed !== printer.status) {
-      // ONLINE / OFFLINE changed — notify the backend
-      console.log(`Printer "${printer.name}" (${printer.ip}:${printer.port}): ${printer.status} → ${probed}`);
+      console.log(`Printer "${printer.name}" (${addr}): ${printer.status} → ${probed}`);
       printer.status = probed;
       await patchPrinterStatus(printer.id, probed);
     } else {
-      console.log(`Printer "${printer.name}" (${printer.ip}:${printer.port}): ${probed} (no change)`);
+      console.log(`Printer "${printer.name}" (${addr}): ${probed} (no change)`);
     }
   }
 }
@@ -349,8 +408,9 @@ app.post('/login', async (req: Request, res: Response) => {
     if (setCookieHeader) {
       const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
       for (const c of cookieHeaders) {
-        const match = c.match(/mysagra_token=([^;]+)/);
-        if (match) { tokenValue = match[1]; break; }
+        // Match the token name allowing optional spaces around = and before ;
+        const match = c.match(/(?:^|;)\s*mysagra_token\s*=\s*([^;]*)/);
+        if (match) { tokenValue = match[1].trim(); break; }
       }
     }
 
@@ -360,7 +420,7 @@ app.post('/login', async (req: Request, res: Response) => {
 
     res.cookie('mystampa_session', tokenValue, {
       httpOnly: true,
-      secure: false,
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 6 * 60 * 60 * 1000,
     });
@@ -387,26 +447,28 @@ app.get('/config', (req: Request, res: Response) => {
 // --- API Routes for config page ---
 
 /**
- * Read the config file. Returns default empty config if file doesn't exist.
+ * Read the config file asynchronously. Returns default empty config if file doesn't exist.
  */
-function readConfig(): { singleTicketCategories: string[] } {
+async function readConfig(): Promise<{ singleTicketCategories: string[] }> {
   try {
-    if (fs.existsSync(CONFIG_FILE)) {
-      const raw = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      return JSON.parse(raw);
-    }
+    await fs.promises.access(CONFIG_FILE);
+    const raw = await fs.promises.readFile(CONFIG_FILE, 'utf-8');
+    return JSON.parse(raw);
   } catch (e) {
-    console.error('Failed to read config file:', e);
+    // ENOENT is expected when the file hasn't been created yet
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error('Failed to read config file:', e);
+    }
   }
   return { singleTicketCategories: [] };
 }
 
 /**
- * Write config to file and update env variable.
+ * Write config to file asynchronously and update env variable.
  */
-function writeConfig(config: { singleTicketCategories: string[] }) {
-  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+async function writeConfig(config: { singleTicketCategories: string[] }): Promise<void> {
+  await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
+  await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
   // Update env so print handler picks up new values
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
 }
@@ -443,6 +505,7 @@ app.get('/api/printers', (req: Request, res: Response) => {
     id: p.id,
     name: p.name,
     ip: p.ip,
+    mac: p.mac,
     port: p.port,
     description: p.description,
     status: p.status,
@@ -452,18 +515,18 @@ app.get('/api/printers', (req: Request, res: Response) => {
 /**
  * GET /api/config - Get current config
  */
-app.get('/api/config', (req: Request, res: Response) => {
+app.get('/api/config', async (req: Request, res: Response) => {
   const token = req.cookies?.mystampa_session;
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated' });
   }
-  return res.json(readConfig());
+  return res.json(await readConfig());
 });
 
 /**
  * POST /api/config - Save config
  */
-app.post('/api/config', (req: Request, res: Response) => {
+app.post('/api/config', async (req: Request, res: Response) => {
   const token = req.cookies?.mystampa_session;
   if (!token) {
     return res.status(401).json({ error: 'Not authenticated' });
@@ -473,7 +536,12 @@ app.post('/api/config', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
   const config = { singleTicketCategories };
-  writeConfig(config);
+  try {
+    await writeConfig(config);
+  } catch (e) {
+    console.error('Failed to write config:', e);
+    return res.status(500).json({ error: 'Failed to save config' });
+  }
   return res.json({ ok: true, config });
 });
 
