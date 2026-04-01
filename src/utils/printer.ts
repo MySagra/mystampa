@@ -196,9 +196,10 @@ export function buildKitchenReceipt(
 
   const table = trimStr(order.table) || "-";
   const customer = trimStr(order.customer) || "-";
+  const hasTable = order.table !== "NO_TABLE_PRESET";
 
   // Metti TAVOLO e PROGR sulla stessa riga, se possibile
-  const tavProgLine = `N°: ${progress} - TAVOLO: ${table}`;
+  const tavProgLine = hasTable ? `N°: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
   out.push(TXT_BIG + cut(tavProgLine, Math.floor(RECEIPT_W / 2)) + TXT_NORMAL); // TXT_BIG dimezza i caratteri stampabili sulla riga (circa 24 totali)
 
   if (customer !== "-") {
@@ -214,6 +215,9 @@ export function buildKitchenReceipt(
       out.push(TXT_MEDIUM + cut(custLine, RECEIPT_W) + TXT_NORMAL);
     }
   }
+
+  if (trimStr(order.displayCode))
+    out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
 
   out.push(line("-"));
 
@@ -314,7 +318,8 @@ export async function buildCashReceipt(
 
   if (trimStr(order.displayCode))
     out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
-  out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
+  if (trimStr(order.table) !== "NO_TABLE_PRESET")
+    out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
 
   if (trimStr(order.paymentMethod)) {
