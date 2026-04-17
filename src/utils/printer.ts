@@ -635,3 +635,148 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
     });
   });
 }
+
+/**
+ * Build a closure report receipt with general statistics and category breakdowns.
+ * Returns an array of parts where the first element is the main report and subsequent
+ * elements are individual category tickets.
+ */
+export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][] {
+  const RECEIPT_W = 48;
+  const receipts: (string | Buffer)[][] = [];
+
+  const repeat = (ch: string, n: number) => ch.repeat(Math.max(0, n));
+  const line = (ch = "-") => repeat(ch, RECEIPT_W);
+  const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
+  const padRight = (s: string, w: number) =>
+    s.length >= w ? s : s + repeat(" ", w - s.length);
+
+  const lr = (left: string, right: string) => {
+    left = String(left).trimEnd();
+    right = String(right).trim();
+    const space = 1;
+    const leftW = RECEIPT_W - right.length - space;
+    const leftCut = cut(left, Math.max(0, leftW));
+    return padRight(leftCut, Math.max(0, leftW)) + repeat(" ", space) + right;
+  };
+
+  const eur = (n: number) => {
+    const v = Number.isFinite(n) ? n : 0;
+    return `€${v.toFixed(2).replace(".", ",")}`;
+  };
+
+  const GS = "\x1D";
+  const ESC = "\x1B";
+  const TXT_NORMAL = GS + "!" + "\x00";
+  const TXT_BIG = GS + "!" + "\x11";
+  const TXT_MEDIUM = GS + "!" + "\x01";
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
+
+  // =========================
+  // MAIN REPORT
+  // =========================
+  const mainOut: string[] = [];
+  const report = reportData.report;
+
+  mainOut.push("");
+  mainOut.push(TXT_BIG + BOLD_ON + "CHIUSURA GENERALE" + BOLD_OFF + TXT_NORMAL);
+  mainOut.push(line("="));
+
+  // Format timestamp
+  if (report.timestamp) {
+    try {
+      const d = new Date(report.timestamp);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        const hrs = String(d.getHours()).padStart(2, '0');
+        const mins = String(d.getMinutes()).padStart(2, '0');
+        mainOut.push(cut(`DATA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
+      }
+    } catch {
+      mainOut.push(cut(`DATA: ${report.timestamp}`, RECEIPT_W));
+    }
+  }
+
+  mainOut.push(line("-"));
+  mainOut.push(TXT_MEDIUM + BOLD_ON + "RIEPILOGO GENERALE" + BOLD_OFF + TXT_NORMAL);
+  mainOut.push(line("-"));
+
+  mainOut.push(lr("Totale Ordini:", String(report.totalOrders || 0)));
+  mainOut.push(lr("Incasso Totale:", eur(report.totalRevenue || 0)));
+  mainOut.push(lr("Incasso Contanti:", eur(report.totalCashRevenue || 0)));
+  mainOut.push(lr("Incasso Elettronico:", eur(report.totalCardRevenue || 0)));
+
+  // Cash Register Stats
+  if (report.cashRegisterStats && report.cashRegisterStats.length > 0) {
+    mainOut.push("");
+    mainOut.push(line("="));
+    mainOut.push(TXT_MEDIUM + BOLD_ON + "STATISTICHE PER CASSA" + BOLD_OFF + TXT_NORMAL);
+    mainOut.push(line("="));
+
+    for (const crStat of report.cashRegisterStats) {
+      mainOut.push("");
+      mainOut.push(BOLD_ON + cut(crStat.cashRegisterName || "Cassa", RECEIPT_W) + BOLD_OFF);
+      mainOut.push(line("-"));
+      mainOut.push(lr("Totale:", eur(crStat.totalRevenue || 0)));
+      mainOut.push(lr("Contanti:", eur(crStat.totalCashRevenue || 0)));
+      mainOut.push(lr("Elettronico:", eur(crStat.totalCardRevenue || 0)));
+    }
+  }
+
+  // Category Stats
+  if (report.categoryStats && report.categoryStats.length > 0) {
+    mainOut.push("");
+    mainOut.push(line("="));
+    mainOut.push(TXT_MEDIUM + BOLD_ON + "STATISTICHE PER CATEGORIA" + BOLD_OFF + TXT_NORMAL);
+    mainOut.push(line("="));
+
+    for (const catStat of report.categoryStats) {
+      mainOut.push(lr(cut((catStat.categoryName || "Categoria").toUpperCase(), RECEIPT_W - 10), eur(catStat.revenue || 0)));
+    }
+  }
+
+  mainOut.push("");
+  mainOut.push(line("="));
+  mainOut.push("");
+
+  receipts.push(["\n\n" + mainOut.join("\n") + "\n\n"]);
+
+  // =========================
+  // CATEGORY TICKETS
+  // =========================
+  if (report.categoryStats && report.categoryStats.length > 0) {
+    for (const catStat of report.categoryStats) {
+      const catOut: string[] = [];
+
+      const catQty = catStat.quantity || 0;
+      const catName = (catStat.categoryName || "Categoria").toUpperCase();
+
+      catOut.push("");
+      catOut.push(TXT_BIG + BOLD_ON + `${catQty}x ${catName}` + BOLD_OFF + TXT_NORMAL);
+      catOut.push(line("="));
+
+      if (catStat.foodStats && catStat.foodStats.length > 0) {
+        catOut.push("");
+        catOut.push(line("-"));
+        catOut.push(BOLD_ON + "DETTAGLIO PRODOTTI" + BOLD_OFF);
+        catOut.push(line("-"));
+
+        for (const foodStat of catStat.foodStats) {
+          catOut.push("");
+          catOut.push(cut(`${foodStat.quantity || 0}x ${foodStat.foodName || "Prodotto"}`, RECEIPT_W));
+        }
+      }
+
+      catOut.push("");
+      catOut.push(line("="));
+      catOut.push("");
+
+      receipts.push(["\n\n" + catOut.join("\n") + "\n\n"]);
+    }
+  }
+
+  return receipts;
+}

@@ -16,15 +16,21 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder } from './routes/print';
+import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
 
 
 dotenv.config();
 
+if (!process.env.API_KEY) {
+  console.error('[Config] FATAL: API_KEY env var not set. Set it in .env or environment and restart.');
+  process.exit(1);
+}
+
 // Configuration variables with defaults
 const API_URL: string = process.env.API_URL || 'http://localhost:4300';
-const API_KEY: string = process.env.API_KEY || '';
+const API_KEY: string = process.env.API_KEY;
 const PORT = 3032;
 
 
@@ -116,6 +122,13 @@ async function startSSE(): Promise<void> {
                         console.log('SSE: print order handled successfully', result);
                       } else {
                         console.error('SSE: print order failed:', result.error);
+                      }
+                    } else if (eventType === 'general-closure') {
+                      const result = await handleGeneralClosure(payload, printers);
+                      if (result.ok) {
+                        console.log('SSE: general closure handled successfully', result);
+                      } else {
+                        console.error('SSE: general closure failed:', result.error);
                       }
                     } else {
                       console.log(`SSE: ignoring event type '${eventType}'`);

@@ -1,62 +1,57 @@
 import axios from 'axios';
 
-// 1. Creazione dell'istanza base
+const MAX_RETRIES = 6;
+const RETRY_BASE_MS = 1000;
+
 const axiosInstance = axios.create({
-    timeout: 10000, // 10 secondi di timeout
-    headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-    }
+  timeout: 10000,
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  },
 });
 
-// Helper per mettere in pausa l'esecuzione (delay)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// 2. INTERCEPTOR DELLE RICHIESTE (Log utile per il debug)
-axiosInstance.interceptors.request.use((config) => {
-    console.log(`[Axios] Eseguo ${config.method?.toUpperCase()} a ${config.url}`);
+const extractApiError = (error: any): string => {
+  const data = error.response?.data;
+  return data?.message || data?.error || error.message || 'unknown error';
+};
+
+axiosInstance.interceptors.request.use(
+  (config) => {
+    const apiKey = process.env.API_KEY || '';
+    config.headers['X-API-KEY'] = apiKey;
+    console.log(`[Axios] ${config.method?.toUpperCase()} ${config.url}`);
     return config;
-}, (error) => {
-    return Promise.reject(error);
-});
+  },
+  (error) => Promise.reject(error)
+);
 
-// 3. INTERCEPTOR DELLE RISPOSTE (Qui c'è la magia del FALLBACK / RETRY)
 axiosInstance.interceptors.response.use(
-    (response) => {
-        // Se la chiamata va a buon fine, restituisci i dati normalmente
-        return response;
-    },
-    async (error) => {
-        const config = error.config;
+  (response) => response,
+  async (error) => {
+    const config = error.config;
+    const status = error.response?.status;
+    const errMsg = extractApiError(error);
 
-        // Impostiamo il numero massimo di tentativi (es. 6 tentativi = 30 secondi totali di attesa)
-        const MAX_RETRIES = 6;
-
-        // Se manca la configurazione o abbiamo superato i tentativi, diamo l'errore finale
-        if (!config || (config._retryCount && config._retryCount >= MAX_RETRIES)) {
-            console.error(`[Axios Error] Fallimento definitivo dopo ${MAX_RETRIES} tentativi.`);
-            return Promise.reject(error);
-        }
-
-        // Inizializza il contatore dei tentativi se non esiste
-        config._retryCount = config._retryCount || 0;
-        config._retryCount += 1;
-
-        // Se l'errore è 401 (API key non valida) NON ha senso riprovare, fermiamoci subito.
-        if (error.response && error.response.status === 401) {
-            console.error(`[Axios Error] Errore 401: API key non valida o non autorizzata. Interrompo i retry.`);
-            return Promise.reject(error);
-        }
-
-        // Log del fallback
-        console.warn(`[Axios Fallback] API non pronta o irraggiungibile. Tentativo ${config._retryCount} di ${MAX_RETRIES} in corso tra 30 secondi...`);
-
-        // Aspetta 30 secondi (30000 millisecondi) prima di riprovare
-        await sleep(30000);
-
-        // Riprova la chiamata esatta che era fallita!
-        return axiosInstance(config);
+    if (status === 401) {
+      console.error(`[Axios] 401 Unauthorized — API key invalid or missing. message="${errMsg}"`);
+      return Promise.reject(error);
     }
+
+    if (!config || (config._retryCount ?? 0) >= MAX_RETRIES) {
+      console.error(`[Axios] Permanent failure after ${MAX_RETRIES} retries. status=${status ?? 'network'} message="${errMsg}"`);
+      return Promise.reject(error);
+    }
+
+    config._retryCount = (config._retryCount ?? 0) + 1;
+    const delay = RETRY_BASE_MS * Math.pow(2, config._retryCount);
+    console.warn(`[Axios] Request failed (status=${status ?? 'network'}, attempt ${config._retryCount}/${MAX_RETRIES}). Retry in ${delay}ms... message="${errMsg}"`);
+
+    await sleep(delay);
+    return axiosInstance(config);
+  }
 );
 
 export default axiosInstance;
