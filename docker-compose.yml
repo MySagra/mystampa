@@ -15,12 +15,6 @@ services:
     volumes:
       - ./assets:/app/assets
       - mystampa_config:/app/data
-    networks:
-      - mysagra-network
 
 volumes:
   mystampa_config:
-
-networks:
-  mysagra-network:
-    external: true
