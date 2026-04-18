@@ -312,12 +312,11 @@ export async function buildCashReceipt(
   const TXT_BIG = GS + "!" + "\x11";
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
-
-  const orderNum = order.ticketNumber ?? order.id;
-  out.push(TXT_BIG + BOLD_ON + `Numero Ordine: ${orderNum}` + BOLD_OFF + TXT_NORMAL);
-
+  
   if (trimStr(order.displayCode))
-    out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+    out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
+  if (trimStr(order.ticketNumber))
+    out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
   if (trimStr(order.table) !== "NO_TABLE_PRESET")
     out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
