@@ -21,6 +21,7 @@
 import net from 'net';
 import fs from 'fs';
 import path from 'path';
+import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
 
@@ -74,14 +75,6 @@ function toNumber(v: any): number {
  */
 function eur(n: number): string {
   return `€${n.toFixed(2)}`;
-}
-
-/**
- * Generate a blank space string consisting of `n` newline characters.
- * Useful for adding padding above or below a receipt.
- */
-function blank(n = 6): string {
-  return '\n'.repeat(n);
 }
 
 /**
@@ -203,9 +196,10 @@ export function buildKitchenReceipt(
 
   const table = trimStr(order.table) || "-";
   const customer = trimStr(order.customer) || "-";
+  const hasTable = order.table !== "NO_TABLE_PRESET";
 
   // Metti TAVOLO e PROGR sulla stessa riga, se possibile
-  const tavProgLine = `N°: ${progress} - TAVOLO: ${table}`;
+  const tavProgLine = hasTable ? `N°: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
   out.push(TXT_BIG + cut(tavProgLine, Math.floor(RECEIPT_W / 2)) + TXT_NORMAL); // TXT_BIG dimezza i caratteri stampabili sulla riga (circa 24 totali)
 
   if (customer !== "-") {
@@ -221,6 +215,9 @@ export function buildKitchenReceipt(
       out.push(TXT_MEDIUM + cut(custLine, RECEIPT_W) + TXT_NORMAL);
     }
   }
+
+  if (trimStr(order.displayCode))
+    out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
 
   out.push(line("-"));
 
@@ -306,8 +303,6 @@ export async function buildCashReceipt(
     return `${s}€`;
   };
 
-  const blankLines = (n: number) => repeat("\n", Math.max(0, n)).trimEnd(); // oppure usa la tua blank()
-
   // =========================
   // HEADER
   // =========================
@@ -317,13 +312,13 @@ export async function buildCashReceipt(
   const TXT_BIG = GS + "!" + "\x11";
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
-
-  const orderNum = order.ticketNumber ?? order.id;
-  out.push(TXT_BIG + BOLD_ON + `Numero Ordine: ${orderNum}` + BOLD_OFF + TXT_NORMAL);
-
+  
   if (trimStr(order.displayCode))
-    out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
-  out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
+    out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
+  if (trimStr(order.ticketNumber))
+    out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
+  if (trimStr(order.table) !== "NO_TABLE_PRESET")
+    out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
 
   if (trimStr(order.paymentMethod)) {
@@ -440,6 +435,8 @@ export async function buildCashReceipt(
       });
       if (logoBuf.length > 0) {
         parts.push(logoBuf);
+      } else {
+        console.warn(`[Printer] Logo at ${logoPath} returned empty buffer, skipping.`);
       }
       break;
     }
@@ -464,6 +461,8 @@ export async function buildCashReceipt(
     });
     if (mysagraFooterBuf.length > 0) {
       parts.push(mysagraFooterBuf);
+    } else {
+      console.warn(`[Printer] Footer image at ${mysagraPath} returned empty buffer, skipping.`);
     }
   }
 
@@ -518,8 +517,6 @@ export async function buildCashReceipt(
  * returned promise resolves when the data has been written and
  * the socket closed, and rejects on any connection error.
  */
-import iconv from "iconv-lite";
-
 export async function sendToPrinter(
   ip: string,
   port: number,
@@ -557,15 +554,32 @@ export async function sendToPrinter(
 
   return new Promise((resolve, reject) => {
     const client = new net.Socket();
+    let settled = false;
+
+    const overallTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.destroy();
+        reject(new Error(`Timeout: printer ${ipClean}:${portClean} did not respond`));
+      }
+    }, 5000);
 
     client.connect(portClean, ipClean, () => {
       client.write(payload, () => {
+        clearTimeout(overallTimeout);
+        settled = true;
         client.end();
         resolve();
       });
     });
 
-    client.on("error", reject);
+    client.on("error", (err) => {
+      clearTimeout(overallTimeout);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
   });
 }
 
@@ -607,8 +621,9 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
       const paperEnded = (statusByte & 0x60) === 0x60;
       const paperLow = (statusByte & 0x0C) === 0x0C;
 
-      client.end();
-      client.removeListener("error", onError); // Cleanup listener
+      // Rimuovi il listener prima di destroy per evitare eventi 'error' non gestiti
+      client.removeListener("error", onError);
+      client.destroy();
 
       console.log("Carta finita: ", paperEnded);
       console.log("Carta quasi finita: ", paperLow);
@@ -618,4 +633,149 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
       else resolve("OK");
     });
   });
+}
+
+/**
+ * Build a closure report receipt with general statistics and category breakdowns.
+ * Returns an array of parts where the first element is the main report and subsequent
+ * elements are individual category tickets.
+ */
+export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][] {
+  const RECEIPT_W = 48;
+  const receipts: (string | Buffer)[][] = [];
+
+  const repeat = (ch: string, n: number) => ch.repeat(Math.max(0, n));
+  const line = (ch = "-") => repeat(ch, RECEIPT_W);
+  const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
+  const padRight = (s: string, w: number) =>
+    s.length >= w ? s : s + repeat(" ", w - s.length);
+
+  const lr = (left: string, right: string) => {
+    left = String(left).trimEnd();
+    right = String(right).trim();
+    const space = 1;
+    const leftW = RECEIPT_W - right.length - space;
+    const leftCut = cut(left, Math.max(0, leftW));
+    return padRight(leftCut, Math.max(0, leftW)) + repeat(" ", space) + right;
+  };
+
+  const eur = (n: number) => {
+    const v = Number.isFinite(n) ? n : 0;
+    return `€${v.toFixed(2).replace(".", ",")}`;
+  };
+
+  const GS = "\x1D";
+  const ESC = "\x1B";
+  const TXT_NORMAL = GS + "!" + "\x00";
+  const TXT_BIG = GS + "!" + "\x11";
+  const TXT_MEDIUM = GS + "!" + "\x01";
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
+
+  // =========================
+  // MAIN REPORT
+  // =========================
+  const mainOut: string[] = [];
+  const report = reportData.report;
+
+  mainOut.push("");
+  mainOut.push(TXT_BIG + BOLD_ON + "CHIUSURA GENERALE" + BOLD_OFF + TXT_NORMAL);
+  mainOut.push(line("="));
+
+  // Format timestamp
+  if (report.timestamp) {
+    try {
+      const d = new Date(report.timestamp);
+      if (!isNaN(d.getTime())) {
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        const hrs = String(d.getHours()).padStart(2, '0');
+        const mins = String(d.getMinutes()).padStart(2, '0');
+        mainOut.push(cut(`DATA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
+      }
+    } catch {
+      mainOut.push(cut(`DATA: ${report.timestamp}`, RECEIPT_W));
+    }
+  }
+
+  mainOut.push(line("-"));
+  mainOut.push(TXT_MEDIUM + BOLD_ON + "RIEPILOGO GENERALE" + BOLD_OFF + TXT_NORMAL);
+  mainOut.push(line("-"));
+
+  mainOut.push(lr("Totale Ordini:", String(report.totalOrders || 0)));
+  mainOut.push(lr("Incasso Totale:", eur(report.totalRevenue || 0)));
+  mainOut.push(lr("Incasso Contanti:", eur(report.totalCashRevenue || 0)));
+  mainOut.push(lr("Incasso Elettronico:", eur(report.totalCardRevenue || 0)));
+
+  // Cash Register Stats
+  if (report.cashRegisterStats && report.cashRegisterStats.length > 0) {
+    mainOut.push("");
+    mainOut.push(line("="));
+    mainOut.push(TXT_MEDIUM + BOLD_ON + "STATISTICHE PER CASSA" + BOLD_OFF + TXT_NORMAL);
+    mainOut.push(line("="));
+
+    for (const crStat of report.cashRegisterStats) {
+      mainOut.push("");
+      mainOut.push(BOLD_ON + cut(crStat.cashRegisterName || "Cassa", RECEIPT_W) + BOLD_OFF);
+      mainOut.push(line("-"));
+      mainOut.push(lr("Totale:", eur(crStat.totalRevenue || 0)));
+      mainOut.push(lr("Contanti:", eur(crStat.totalCashRevenue || 0)));
+      mainOut.push(lr("Elettronico:", eur(crStat.totalCardRevenue || 0)));
+    }
+  }
+
+  // Category Stats
+  if (report.categoryStats && report.categoryStats.length > 0) {
+    mainOut.push("");
+    mainOut.push(line("="));
+    mainOut.push(TXT_MEDIUM + BOLD_ON + "STATISTICHE PER CATEGORIA" + BOLD_OFF + TXT_NORMAL);
+    mainOut.push(line("="));
+
+    for (const catStat of report.categoryStats) {
+      mainOut.push(lr(cut((catStat.categoryName || "Categoria").toUpperCase(), RECEIPT_W - 10), eur(catStat.revenue || 0)));
+    }
+  }
+
+  mainOut.push("");
+  mainOut.push(line("="));
+  mainOut.push("");
+
+  receipts.push(["\n\n" + mainOut.join("\n") + "\n\n"]);
+
+  // =========================
+  // CATEGORY TICKETS
+  // =========================
+  if (report.categoryStats && report.categoryStats.length > 0) {
+    for (const catStat of report.categoryStats) {
+      const catOut: string[] = [];
+
+      const catQty = catStat.quantity || 0;
+      const catName = (catStat.categoryName || "Categoria").toUpperCase();
+
+      catOut.push("");
+      catOut.push(TXT_BIG + BOLD_ON + `${catQty}x ${catName}` + BOLD_OFF + TXT_NORMAL);
+      catOut.push(line("="));
+
+      if (catStat.foodStats && catStat.foodStats.length > 0) {
+        catOut.push("");
+        catOut.push(line("-"));
+        catOut.push(BOLD_ON + "DETTAGLIO PRODOTTI" + BOLD_OFF);
+        catOut.push(line("-"));
+
+        for (const foodStat of catStat.foodStats) {
+          catOut.push("");
+          catOut.push(cut(`${foodStat.quantity || 0}x ${foodStat.foodName || "Prodotto"}`, RECEIPT_W));
+        }
+      }
+
+      catOut.push("");
+      catOut.push(line("="));
+      catOut.push("");
+
+      receipts.push(["\n\n" + catOut.join("\n") + "\n\n"]);
+    }
+  }
+
+  return receipts;
 }

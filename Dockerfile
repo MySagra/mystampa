@@ -34,12 +34,17 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./package.json
 
-# Copy swagger.json
-COPY --from=builder /app/swagger.json ./swagger.json
+# Copy EJS views
+COPY --from=builder /app/src/views ./src/views
+
+# Copy public static files
+COPY --from=builder /app/public ./public
 
 # Copy assets and default-assets fallback
 COPY --from=builder /app/assets ./assets
 COPY --from=builder /app/assets ./default-assets
+
+RUN mkdir -p data && chown -R expressjs:nodejs data
 
 USER expressjs
 
@@ -49,4 +54,4 @@ USER expressjs
 
 ENV HOSTNAME "0.0.0.0"
 
-CMD ["node", "dist/index.js"]
+CMD ["sh", "-c", "mkdir -p data && [ -f data/config.json ] || echo '{}' > data/config.json && node dist/index.js"]

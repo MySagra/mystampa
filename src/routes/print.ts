@@ -1,18 +1,14 @@
 /**
- * Route handler for the `/print` endpoint.
+ * Print handler for the mystampa service.
  *
- * This implementation reflects the updated business logic for the
- * `mystampa` service. Instead of using preloaded categories to find
- * printers, it queries the external API on‑the‑fly for each food
- * item to determine its associated kitchen printer. It also looks
- * up the cash register printer via a dedicated API call. Items are
- * aggregated per printer and a separate receipt is generated for
- * kitchen and cash printers. Receipts include order metadata and
- * blank space above and below to ensure thermal printers advance
- * the paper.
+ * This module exports a standalone function `handlePrintOrder` that
+ * contains the business logic for processing incoming orders.
+ * It queries the external API for each food item to determine its
+ * associated kitchen printer, looks up the cash register printer,
+ * aggregates items per printer and generates separate receipts for
+ * kitchen and cash printers.
  */
 
-import { Router, Request, Response } from "express";
 import axiosInstance from "../utils/axiosInstance";
 import {
   IncomingOrder,
@@ -20,6 +16,9 @@ import {
   CashRegisterFromApi,
   Printer,
 } from "../models";
+
+const API_URL: string = process.env.API_URL || "http://localhost:4300";
+const apiKey: string = process.env.API_KEY || "";
 import { printQueue } from "../utils/printQueue";
 import {
   buildKitchenReceipt,
@@ -29,12 +28,12 @@ import {
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
-
-const router = Router();
+import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
+import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 
 // Keep a progress counter for each printer. Each time a kitchen receipt
 // is generated for a printer the counter increments. This map lives
-// within the module scope so values persist across requests while the
+// within the module scope so values persist across calls while the
 // server is running.
 const progressCounters: { [printerId: string]: number } = {};
 
@@ -42,33 +41,67 @@ const progressCounters: { [printerId: string]: number } = {};
  * Safe print helper: checks paper status before printing.
  * If paper is out or any error occurs, the job is added to the print queue.
  */
-async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer) {
+async function safePrint(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer, mac?: string | null, printers?: Printer[]) {
+  // Prefer IP; if not available resolve from MAC
+  const primaryIp = resolveEffectiveIp(ip, mac);
+  if (!primaryIp) {
+    console.error(`[SafePrint] No address available for printer ${printerId}`);
+    return;
+  }
+
+  let targetIp = primaryIp;
+  let status = 'UNKNOWN';
+
   try {
-    const status = await getPrinterStatus(ip, port);
-    if (status === "OK" || status === "CARTA_QUASI_FINITA") {
-      try {
-        await sendToPrinter(ip, port, data);
-        console.log(`[SafePrint] Printed successfully to ${printerId}`);
-      } catch (printErr) {
-        console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
-        printQueue.add(printerId, ip, port, data);
+    status = await getPrinterStatus(targetIp, port);
+  } catch (err) {
+    console.warn(`[SafePrint] getPrinterStatus failed for ${printerId} at ${targetIp}:${port}:`, err);
+    // Connection to IP failed — if we have both IP and MAC, try MAC-resolved IP
+    if (ip && mac) {
+      const macIp = resolveIpFromMac(mac);
+      if (macIp && macIp !== targetIp) {
+        console.log(`[SafePrint] IP ${targetIp} unreachable, retrying with MAC-resolved IP ${macIp}`);
+        try {
+          status = await getPrinterStatus(macIp, port);
+          targetIp = macIp;
+          // IP changed — update DB asynchronously (don't block printing)
+          patchPrinterIp(printerId, macIp);
+        } catch {
+          console.error(`[SafePrint] Both IP and MAC-resolved IP failed for ${printerId}, adding to queue.`);
+          printQueue.add(printerId, ip, port, data, mac);
+          return;
+        }
+      } else {
+        console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+        printQueue.add(printerId, ip, port, data, mac);
+        return;
       }
     } else {
-      console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
-      printQueue.add(printerId, ip, port, data);
+      console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+      printQueue.add(printerId, primaryIp, port, data, mac);
+      return;
     }
-  } catch (statusErr) {
-    console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue:`, statusErr);
-    printQueue.add(printerId, ip, port, data);
   }
-}
 
-/**
- * Extend Express Request to optionally include the cached list of
- * printers from initialization.
- */
-interface PrintRequest extends Request {
-  printers?: Printer[];
+  if (status === "OK" || status === "CARTA_QUASI_FINITA") {
+    try {
+      await sendToPrinter(targetIp, port, data);
+      console.log(`[SafePrint] Printed successfully to ${printerId} (${targetIp}:${port})`);
+      // If the printer was not ONLINE in the DB, patch it now that we know it's reachable
+      const cached = printers?.find((p) => p.id === printerId);
+      if (cached && cached.status !== 'ONLINE') {
+        console.log(`[SafePrint] Printer ${printerId} was ${cached.status} but printed successfully — patching to ONLINE`);
+        cached.status = 'ONLINE';
+        patchPrinterStatus(printerId, 'ONLINE').catch(() => {});
+      }
+    } catch (printErr) {
+      console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
+      printQueue.add(printerId, ip || primaryIp, port, data, mac);
+    }
+  } else {
+    console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
+    printQueue.add(printerId, ip || primaryIp, port, data, mac);
+  }
 }
 
 /**
@@ -103,33 +136,32 @@ function toNumber(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/**
- * POST /print
- *
- * Receives an order payload and produces receipts for the kitchen
- * printers associated with each food item and a separate receipt
- * for the cash register printer. Each food is looked up via the
- * external API to determine its kitchen printer and price. Items are
- * grouped by printer ID and printed together. The cash receipt
- * includes unit prices and a final total minus any discount. When
- * printers cannot be resolved, receipts are logged to the console
- * instead of sent over the network.
- */
-router.post("/", async (req: PrintRequest, res: Response) => {
-  const order = req.body as IncomingOrder;
-  if (!order || !Array.isArray(order.orderItems)) {
-    return res
-      .status(400)
-      .json({ error: "Invalid payload: missing orderItems[]" });
-  }
+export interface PrintResult {
+  ok: boolean;
+  kitchenPrinters: string[];
+  cashPrinterId: string;
+  error?: string;
+}
 
-  const EXTERNAL_BASE_URL: string =
-    process.env.EXTERNAL_BASE_URL || "http://localhost:4300";
-  const cookie: string | undefined = (global as any).__AUTH_COOKIE;
-  if (!cookie) {
-    return res
-      .status(500)
-      .json({ error: "Missing auth cookie (login not completed)" });
+/**
+ * Handle an incoming print order. This is the main business logic
+ * function that replaces the old POST /print route handler.
+ *
+ * @param order The incoming order payload
+ * @param printers The cached list of printers
+ * @returns PrintResult with status information
+ */
+export async function handlePrintOrder(
+  order: IncomingOrder,
+  printers: Printer[]
+): Promise<PrintResult> {
+  if (!order || !Array.isArray(order.orderItems)) {
+    return {
+      ok: false,
+      kitchenPrinters: [],
+      cashPrinterId: "",
+      error: "Invalid payload: missing orderItems[]",
+    };
   }
 
   // Aggregation map for kitchen receipts keyed by printerId
@@ -162,17 +194,17 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     await Promise.all(allFoodIds.map(async (fId) => {
       try {
         const r = await axiosInstance.get<FoodFromApi>(
-          `${EXTERNAL_BASE_URL}/v1/foods/${fId}`,
+          `${API_URL}/v1/foods/${fId}`,
           {
             headers: {
               Accept: "application/json",
-              ...(cookie ? { Cookie: cookie } : {}),
+              'X-API-KEY': apiKey,
             }
           }
         );
         foodDetails.set(fId, r.data);
       } catch (e) {
-        console.error(`[Print Route] Failed to fetch food details for ${fId}`, e);
+        console.error(`[Print] Failed to fetch food details for ${fId}`, e);
       }
     }));
   }
@@ -215,7 +247,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
 
-    const categoryId = apiFood?.categoryId ?? (it.food as any)?.categoryId;
+    const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
     if (categoryId && targetCategoryIds.includes(String(categoryId))) {
       singleTickets.push({ foodName, quantity: qty, notes });
     }
@@ -227,16 +259,17 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     id: string;
     ip?: string | null;
     port?: any;
+    mac?: string | null;
   } | null = null;
   if (order.cashRegisterId !== null && order.cashRegisterId !== undefined) {
     const crId = trimStr(order.cashRegisterId);
     try {
       const r = await axiosInstance.get<CashRegisterFromApi>(
-        `${EXTERNAL_BASE_URL}/v1/cash-registers/${crId}?include=printer`,
+        `${API_URL}/v1/cash-registers/${crId}?include=printer`,
         {
           headers: {
             Accept: "application/json",
-            ...(cookie ? { Cookie: cookie } : {}),
+            'X-API-KEY': apiKey,
           },
         },
       );
@@ -248,15 +281,13 @@ router.post("/", async (req: PrintRequest, res: Response) => {
           id: r.data.defaultPrinter.id,
           ip: r.data.defaultPrinter.ip,
           port: r.data.defaultPrinter.port,
+          mac: r.data.defaultPrinter.mac ?? null,
         }
         : null;
     } catch (e) {
       console.error("cash-register fetch failed", crId, e);
     }
   }
-
-  // Retrieve cached printers from middleware
-  const printers = req.printers || [];
 
   /**
    * Resolve a printer by ID. If the cash register response included
@@ -266,7 +297,7 @@ router.post("/", async (req: PrintRequest, res: Response) => {
    */
   function resolvePrinter(
     printerId: string,
-  ): { id: string; ip: string; port: number } | null {
+  ): { id: string; ip: string; port: number; mac: string | null } | null {
     const pid = trimStr(printerId);
     if (!pid) return null;
     // If the embedded printer is available and matches this id, use it
@@ -276,29 +307,30 @@ router.post("/", async (req: PrintRequest, res: Response) => {
     ) {
       const ip = trimStr(cashRegisterPrinterEmbedded.ip);
       const port = parsePort(cashRegisterPrinterEmbedded.port);
-      if (ip && port > 0) return { id: pid, ip, port };
+      const mac = cashRegisterPrinterEmbedded.mac ? String(cashRegisterPrinterEmbedded.mac).trim() : null;
+      if ((ip || mac) && port > 0) return { id: pid, ip, port, mac };
     }
     // Fallback to cached printers
-    const p = printers.find((x) => trimStr((x as any).id) === pid);
+    const p = printers.find((x) => trimStr(x.id) === pid);
     if (!p) return null;
     return {
       id: pid,
-      ip: trimStr((p as any).ip),
-      port: parsePort((p as any).port),
+      ip: trimStr(p.ip),
+      port: parsePort(p.port),
+      mac: p.mac ? String(p.mac).trim() : null,
     };
   }
 
-  // Print receipts for kitchen printers
+  // Build all print jobs (kitchen + cash) and fire them in parallel
+  const printJobs: Promise<void>[] = [];
+
   for (const [printerId, lines] of kitchenByPrinterId.entries()) {
     const pr = resolvePrinter(printerId);
-    // Determine progressive number for this printer
     const prog = progressCounters[printerId] ?? 1;
     const receipt = buildKitchenReceipt(order, lines, prog);
-    // Increment progress counter
     progressCounters[printerId] = prog + 1;
     if (pr) {
-      // Use safePrint logic
-      await safePrint(printerId, pr.ip, pr.port, receipt);
+      printJobs.push(safePrint(printerId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {
       console.log("NO PRINTER for kitchen printerId=", printerId);
       console.log(receipt);
@@ -308,26 +340,30 @@ router.post("/", async (req: PrintRequest, res: Response) => {
   // Print receipt for cash register printer.
   // When reprintReceipt is explicitly false the fiscal receipt is skipped.
   if (order.reprintReceipt === false) {
-    console.log("[Print Route] reprintReceipt=false, skipping cash receipt");
+    console.log("[Print] reprintReceipt=false, skipping cash receipt");
   } else if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
     const receipt = await buildCashReceipt(order, cashLines, singleTickets);
     if (pr) {
-      // Use safePrint logic
-      await safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt);
+      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);
     }
   } else {
-    console.log("NO cashRegister printerId found");
-    console.log(await buildCashReceipt(order, cashLines, singleTickets));
+    console.log("NO cashRegister printerId found, skipping cash receipt");
   }
-  return res.json({
+
+  const settled = await Promise.allSettled(printJobs);
+  for (const result of settled) {
+    if (result.status === 'rejected') {
+      console.error('[Print] A print job failed unexpectedly:', result.reason);
+    }
+  }
+
+  return {
     ok: true,
     kitchenPrinters: Array.from(kitchenByPrinterId.keys()),
     cashPrinterId: cashRegisterPrinterId,
-  });
-});
-
-export default router;
+  };
+}
