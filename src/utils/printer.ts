@@ -58,6 +58,19 @@ function trimStr(v: any): string {
   return v === null || v === undefined ? '' : String(v).trim();
 }
 
+// Format a UTC date string to local server time (DD/MM/YYYY HH:MM).
+// Uses Intl so the result matches the OS timezone even when Node TZ=UTC.
+function formatLocalDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const fmt = new Intl.DateTimeFormat('it-IT', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  const p = Object.fromEntries(fmt.formatToParts(d).map(({ type, value }) => [type, value]));
+  return `${p.day}/${p.month}/${p.year} ${p.hour}:${p.minute}`;
+}
+
 /**
  * Convert a value into a number. Handles strings using both comma
  * and dot as decimal separators. Returns 0 for invalid values.
@@ -161,21 +174,7 @@ export function buildKitchenReceipt(
   // Aggiunta ORA sulla stessa riga (se c'è spazio, o andrà accapo automaticamente se troppo lungo)
   let timeStr = "";
   if (trimStr(order.confirmedAt)) {
-    try {
-      const d = new Date(order.confirmedAt as string);
-      if (!isNaN(d.getTime())) {
-        const day = String(d.getDate()).padStart(2, '0');
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const year = d.getFullYear();
-        const hrs = String(d.getHours()).padStart(2, '0');
-        const mins = String(d.getMinutes()).padStart(2, '0');
-        timeStr = `${day}/${month}/${year} ${hrs}:${mins}`;
-      } else {
-        timeStr = trimStr(order.confirmedAt);
-      }
-    } catch {
-      timeStr = trimStr(order.confirmedAt);
-    }
+    timeStr = formatLocalDate(order.confirmedAt as string);
   }
 
   if (timeStr) {
@@ -330,21 +329,7 @@ export async function buildCashReceipt(
   }
 
   if (trimStr(order.confirmedAt)) {
-    try {
-      const d = new Date(order.confirmedAt as string);
-      if (!isNaN(d.getTime())) {
-        const day = String(d.getDate()).padStart(2, '0');
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const year = d.getFullYear();
-        const hrs = String(d.getHours()).padStart(2, '0');
-        const mins = String(d.getMinutes()).padStart(2, '0');
-        out.push(cut(`ORA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
-      } else {
-        out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
-      }
-    } catch {
-      out.push(cut(`ORA: ${trimStr(order.confirmedAt)}`, RECEIPT_W));
-    }
+    out.push(cut(`ORA: ${formatLocalDate(order.confirmedAt as string)}`, RECEIPT_W));
   }
 
   out.push(line("-"));
@@ -684,19 +669,7 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
 
   // Format timestamp
   if (report.timestamp) {
-    try {
-      const d = new Date(report.timestamp);
-      if (!isNaN(d.getTime())) {
-        const day = String(d.getDate()).padStart(2, '0');
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const year = d.getFullYear();
-        const hrs = String(d.getHours()).padStart(2, '0');
-        const mins = String(d.getMinutes()).padStart(2, '0');
-        mainOut.push(cut(`DATA: ${day}/${month}/${year} ${hrs}:${mins}`, RECEIPT_W));
-      }
-    } catch {
-      mainOut.push(cut(`DATA: ${report.timestamp}`, RECEIPT_W));
-    }
+    mainOut.push(cut(`DATA: ${formatLocalDate(report.timestamp)}`, RECEIPT_W));
   }
 
   mainOut.push(line("-"));
