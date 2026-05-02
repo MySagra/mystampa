@@ -58,12 +58,14 @@ function trimStr(v: any): string {
   return v === null || v === undefined ? '' : String(v).trim();
 }
 
-// Format a UTC date string to local server time (DD/MM/YYYY HH:MM).
-// Uses Intl so the result matches the OS timezone even when Node TZ=UTC.
+// Convert UTC date string to Italy local time (DD/MM/YYYY HH:MM).
+// Explicit timeZone required: Node.js in Docker runs with TZ=UTC so
+// methods like getHours() and Intl without timeZone both return UTC.
 function formatLocalDate(dateStr: string): string {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
   const fmt = new Intl.DateTimeFormat('it-IT', {
+    timeZone: 'Europe/Rome',
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', hour12: false,
   });
