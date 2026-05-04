@@ -649,13 +649,9 @@ export function buildCancellationReceipt(
 
   out.push("");
   out.push(line("="));
-  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO" + BOLD_OFF + TXT_NORMAL);
+  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + trimStr(displayCode) + BOLD_OFF + TXT_NORMAL);
   out.push(line("="));
   out.push("");
-
-  if (trimStr(displayCode)) {
-    out.push(TXT_MEDIUM + `CODICE: ${trimStr(displayCode)}` + TXT_NORMAL);
-  }
 
   const customerStr = trimStr(customer);
   if (customerStr) {
