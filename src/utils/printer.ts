@@ -623,6 +623,57 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
 }
 
 /**
+ * Build a cancellation receipt. Prints a large "ORDINE ANNULLATO" header
+ * followed by display code, customer name and table (when present).
+ * Sent to every kitchen printer involved in the original order.
+ */
+export function buildCancellationReceipt(
+  displayCode: string | null | undefined,
+  customer: string | null | undefined,
+  table: string | null | undefined,
+): string {
+  const RECEIPT_W = 48;
+  const out: string[] = [];
+
+  const GS = "\x1D";
+  const ESC = "\x1B";
+  const TXT_NORMAL = GS + "!" + "\x00";
+  const TXT_BIG = GS + "!" + "\x11";
+  const TXT_MEDIUM = GS + "!" + "\x01";
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
+
+  const repeat = (ch: string, n: number) => ch.repeat(Math.max(0, n));
+  const line = (ch = "-") => repeat(ch, RECEIPT_W);
+  const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
+
+  out.push("");
+  out.push(line("="));
+  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO" + BOLD_OFF + TXT_NORMAL);
+  out.push(line("="));
+  out.push("");
+
+  if (trimStr(displayCode)) {
+    out.push(TXT_MEDIUM + `CODICE: ${trimStr(displayCode)}` + TXT_NORMAL);
+  }
+
+  const customerStr = trimStr(customer);
+  if (customerStr) {
+    out.push(TXT_MEDIUM + cut(`CLIENTE: ${customerStr}`, RECEIPT_W) + TXT_NORMAL);
+  }
+
+  const tableStr = trimStr(table);
+  if (tableStr && tableStr !== "NO_TABLE_PRESET") {
+    out.push(TXT_MEDIUM + `TAVOLO: ${tableStr}` + TXT_NORMAL);
+  }
+
+  out.push("");
+  out.push(line("-"));
+
+  return out.join("\n");
+}
+
+/**
  * Build a closure report receipt with general statistics and category breakdowns.
  * Returns an array of parts where the first element is the main report and subsequent
  * elements are individual category tickets.
