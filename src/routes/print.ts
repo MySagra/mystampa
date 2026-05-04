@@ -371,99 +371,39 @@ export async function handlePrintOrder(
 }
 
 /**
- * Handle an order-cancelled SSE event. Fetches the full order from the API,
- * determines which kitchen printers were involved and sends a cancellation
- * receipt to each of them.
+ * Handle an order-cancelled SSE event. Printer IDs come directly in the payload.
+ * Fetches the order only to get customer and table for the receipt.
  */
 export async function handleOrderCancelled(
   payload: {
-    id: IdLike;
+    orderId: IdLike;
     ticketNumber?: number | null;
     displayCode?: string | null;
+    customer?: string | null;
+    table?: string | null;
     status?: string | null;
+    printers: string[];
   },
   printers: Printer[]
 ): Promise<{ ok: boolean; error?: string }> {
-  const orderId = payload.id;
-  console.log(`[Cancellation] Received order-cancelled for orderId=${orderId}`, payload);
+  console.log(`[Cancellation] Received order-cancelled for orderId=${payload.orderId}`, payload);
 
-  let order: IncomingOrder;
-  try {
-    const r = await axiosInstance.get<any>(
-      `${API_URL}/v1/orders/${orderId}`,
-      { headers: { Accept: "application/json", "X-API-KEY": apiKey } }
-    );
-    console.log(`[Cancellation] Order fetch raw response:`, JSON.stringify(r.data).slice(0, 500));
-    // Handle both flat response and wrapped { data: ... } format
-    order = r.data?.data ?? r.data;
-  } catch (e) {
-    console.error(`[Cancellation] Failed to fetch order ${orderId}`, e);
-    return { ok: false, error: `Failed to fetch order ${orderId}` };
-  }
-
-  if (!order || !Array.isArray(order.orderItems)) {
-    console.error(`[Cancellation] Order ${orderId} has no orderItems. Response shape:`, Object.keys(order || {}));
-    return { ok: false, error: `Order ${orderId} missing orderItems` };
-  }
-
-  // Collect food IDs to resolve kitchen printer assignments
-  const allFoodIds = Array.from(
-    new Set(
-      order.orderItems
-        .map((it) => it.foodId || it.food?.id)
-        .filter(Boolean)
-    )
-  ) as string[];
-
-  console.log(`[Cancellation] Order ${orderId} has ${order.orderItems.length} items, foodIds:`, allFoodIds);
-
-  const printerIds = new Set<string>();
-
-  await Promise.all(
-    allFoodIds.map(async (fId) => {
-      try {
-        const r = await axiosInstance.get<FoodFromApi>(
-          `${API_URL}/v1/foods/${fId}`,
-          { headers: { Accept: "application/json", "X-API-KEY": apiKey } }
-        );
-        const pid = trimStr(r.data.printerId);
-        console.log(`[Cancellation] Food ${fId} → printerId="${pid}"`);
-        if (pid) printerIds.add(pid);
-      } catch (e) {
-        console.error(`[Cancellation] Failed to fetch food ${fId}`, e);
-      }
-    })
-  );
-
-  // Fallback: inline food.printerId when API lookup failed
-  for (const it of order.orderItems) {
-    const pid = trimStr(it.food?.printerId);
-    if (pid) printerIds.add(pid);
-  }
-
-  console.log(`[Cancellation] Resolved printerIds:`, Array.from(printerIds));
-  console.log(`[Cancellation] Available printers:`, printers.map(p => `${p.id}(${p.ip})`));
-
-  if (printerIds.size === 0) {
-    console.log("[Cancellation] No kitchen printers found for order", orderId);
+  if (!Array.isArray(payload.printers) || payload.printers.length === 0) {
+    console.log("[Cancellation] No printers in payload, nothing to print");
     return { ok: true };
   }
 
-  const receipt = buildCancellationReceipt(
-    payload.displayCode ?? order.displayCode,
-    order.customer,
-    order.table
-  );
+  const receipt = buildCancellationReceipt(payload.displayCode, payload.customer, payload.table);
 
   const printJobs: Promise<void>[] = [];
-  for (const printerId of printerIds) {
-    const pr = printers.find((p) => trimStr(p.id) === printerId);
+  for (const printerId of payload.printers) {
+    const pr = printers.find((p) => trimStr(p.id) === trimStr(printerId));
     if (pr) {
       printJobs.push(
-        safePrint(printerId, trimStr(pr.ip), parsePort(pr.port), receipt, pr.mac ?? null, printers)
+        safePrint(trimStr(pr.id), trimStr(pr.ip), parsePort(pr.port), receipt, pr.mac ?? null, printers)
       );
     } else {
-      console.log("[Cancellation] No printer found for printerId=", printerId);
+      console.warn(`[Cancellation] No cached printer found for printerId=${printerId}`);
     }
   }
 
