@@ -15,6 +15,7 @@ import {
   FoodFromApi,
   CashRegisterFromApi,
   Printer,
+  IdLike,
 } from "../models";
 
 const API_URL: string = process.env.API_URL || "http://localhost:4300";
@@ -23,6 +24,7 @@ import { printQueue } from "../utils/printQueue";
 import {
   buildKitchenReceipt,
   buildCashReceipt,
+  buildCancellationReceipt,
   sendToPrinter,
   getPrinterStatus,
   KitchenReceiptLine,
@@ -366,4 +368,46 @@ export async function handlePrintOrder(
     kitchenPrinters: Array.from(kitchenByPrinterId.keys()),
     cashPrinterId: cashRegisterPrinterId,
   };
+}
+
+/**
+ * Handle an order-cancelled SSE event. Printer IDs come directly in the payload.
+ * Fetches the order only to get customer and table for the receipt.
+ */
+export async function handleOrderCancelled(
+  payload: {
+    orderId: IdLike;
+    ticketNumber?: number | null;
+    displayCode?: string | null;
+    customer?: string | null;
+    table?: string | null;
+    status?: string | null;
+    printers: string[];
+  },
+  printers: Printer[]
+): Promise<{ ok: boolean; error?: string }> {
+  console.log(`[Cancellation] Received order-cancelled for orderId=${payload.orderId}`, payload);
+
+  if (!Array.isArray(payload.printers) || payload.printers.length === 0) {
+    console.log("[Cancellation] No printers in payload, nothing to print");
+    return { ok: true };
+  }
+
+  const receipt = buildCancellationReceipt(payload.displayCode, payload.customer, payload.table);
+
+  const printJobs: Promise<void>[] = [];
+  for (const printerId of payload.printers) {
+    const pr = printers.find((p) => trimStr(p.id) === trimStr(printerId));
+    if (pr) {
+      printJobs.push(
+        safePrint(trimStr(pr.id), trimStr(pr.ip), parsePort(pr.port), receipt, pr.mac ?? null, printers)
+      );
+    } else {
+      console.warn(`[Cancellation] No cached printer found for printerId=${printerId}`);
+    }
+  }
+
+  await Promise.allSettled(printJobs);
+
+  return { ok: true };
 }

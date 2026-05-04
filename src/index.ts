@@ -15,7 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { Printer } from './models';
-import { handlePrintOrder } from './routes/print';
+import { handlePrintOrder, handleOrderCancelled } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
@@ -122,6 +122,13 @@ async function startSSE(): Promise<void> {
                         console.log('SSE: print order handled successfully', result);
                       } else {
                         console.error('SSE: print order failed:', result.error);
+                      }
+                    } else if (eventType === 'order-cancelled') {
+                      const result = await handleOrderCancelled(payload, printers);
+                      if (result.ok) {
+                        console.log('SSE: order cancellation handled successfully', result);
+                      } else {
+                        console.error('SSE: order cancellation failed:', result.error);
                       }
                     } else if (eventType === 'general-closure') {
                       const result = await handleGeneralClosure(payload, printers);
