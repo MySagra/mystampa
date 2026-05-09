@@ -25,6 +25,8 @@ import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
 
+const SHOW_NUMBERS = process.env.SHOW_NUMBERS === 'true';
+
 /**
  * Types representing individual lines that will appear on receipts.
  *
@@ -159,9 +161,12 @@ export function buildKitchenReceipt(
 
   // ESC/POS size
   const GS = "\x1D";
+  const ESC = "\x1B";
   const TXT_NORMAL = GS + "!" + "\x00";
   const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
   const TXT_MEDIUM = GS + "!" + "\x01"; // double height only (slightly bigger)
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
 
   // =========================
   // HEADER (esattamente come richiesto)
@@ -169,8 +174,10 @@ export function buildKitchenReceipt(
   out.push("");
 
   let topInfo = `PROGR: ${progress}`;
-  if (trimStr(order.displayCode)) {
-    topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null) topInfo = `N°: ${order.ticketNumber} - ${topInfo}`;
+  } else {
+    if (trimStr(order.displayCode)) topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
   }
 
   // Aggiunta ORA sulla stessa riga (se c'è spazio, o andrà accapo automaticamente se troppo lungo)
@@ -200,7 +207,7 @@ export function buildKitchenReceipt(
   const hasTable = order.table !== "NO_TABLE_PRESET";
 
   // Metti TAVOLO e PROGR sulla stessa riga, se possibile
-  const tavProgLine = hasTable ? `N°: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
+  const tavProgLine = hasTable ? `PROGR: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
   out.push(TXT_BIG + cut(tavProgLine, Math.floor(RECEIPT_W / 2)) + TXT_NORMAL); // TXT_BIG dimezza i caratteri stampabili sulla riga (circa 24 totali)
 
   if (customer !== "-") {
@@ -217,8 +224,15 @@ export function buildKitchenReceipt(
     }
   }
 
-  if (trimStr(order.displayCode))
-    out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null)
+      out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.displayCode))
+      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+  } else {
+    if (trimStr(order.displayCode))
+      out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
+  }
 
   out.push(line("-"));
 
@@ -314,10 +328,17 @@ export async function buildCashReceipt(
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
   
-  if (trimStr(order.displayCode))
-    out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
-  if (trimStr(order.ticketNumber))
-    out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null)
+      out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.displayCode))
+      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+  } else {
+    if (trimStr(order.displayCode))
+      out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.ticketNumber))
+      out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
+  }
   if (trimStr(order.table) !== "NO_TABLE_PRESET")
     out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
@@ -475,7 +496,15 @@ export async function buildCashReceipt(
       let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
 
       let subTitle = "";
-      if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      if (SHOW_NUMBERS) {
+        if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
+        if (trimStr(order.displayCode)) {
+          if (subTitle) subTitle += ` - `;
+          subTitle += `COD: ${trimStr(order.displayCode)}`;
+        }
+      } else {
+        if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      }
       if (trimStr(order.customer)) {
         if (subTitle) subTitle += ` - `;
         subTitle += `CLIENTE: ${trimStr(order.customer)}`;
@@ -629,6 +658,7 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
  */
 export function buildCancellationReceipt(
   displayCode: string | null | undefined,
+  ticketNumber: number | null | undefined,
   customer: string | null | undefined,
   table: string | null | undefined,
 ): string {
@@ -647,9 +677,18 @@ export function buildCancellationReceipt(
   const line = (ch = "-") => repeat(ch, RECEIPT_W);
   const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
 
+  const identifier = SHOW_NUMBERS
+    ? (ticketNumber != null ? `N° ${ticketNumber}` : trimStr(displayCode))
+    : trimStr(displayCode);
+
   out.push("");
   out.push(line("="));
-  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + trimStr(displayCode) + BOLD_OFF + TXT_NORMAL);
+  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + identifier + BOLD_OFF + TXT_NORMAL);
+  if (SHOW_NUMBERS && trimStr(displayCode)) {
+    out.push(TXT_MEDIUM + cut(`CODICE: ${trimStr(displayCode)}`, RECEIPT_W) + TXT_NORMAL);
+  } else if (!SHOW_NUMBERS && ticketNumber != null) {
+    out.push(TXT_MEDIUM + `N°: ${ticketNumber}` + TXT_NORMAL);
+  }
   out.push(line("="));
   out.push("");
 

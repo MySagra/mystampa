@@ -393,7 +393,7 @@ export async function handleOrderCancelled(
     return { ok: true };
   }
 
-  const receipt = buildCancellationReceipt(payload.displayCode, payload.customer, payload.table);
+  const receipt = buildCancellationReceipt(payload.displayCode, payload.ticketNumber, payload.customer, payload.table);
 
   const printJobs: Promise<void>[] = [];
   for (const printerId of payload.printers) {
