@@ -568,10 +568,33 @@
           Caricamento categorie...
         </div>
       </div>
+    </div>
 
-      <div class="save-bar" id="saveBar" style="display:none;">
-        <button class="btn btn-save" id="saveBtn" onclick="saveConfig()">Salva modifiche</button>
+    <!-- Station Tickets -->
+    <div class="settings-card">
+      <div class="card-header">
+        <div class="card-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round"
+              d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </div>
+        <span class="card-title">Tagliandini per Postazione di Ritiro</span>
       </div>
+      <p class="card-description">Se attivo, stampa un tagliandino di ritiro per ogni postazione allegato allo scontrino</p>
+
+      <label style="display:flex;align-items:center;gap:0.75rem;cursor:pointer;padding:0.5rem 0;">
+        <div class="checkbox-wrapper" style="margin:0;">
+          <input type="checkbox" id="stationTicketsToggle" onchange="onStationToggleChange()">
+        </div>
+        <span style="font-size:0.9rem;font-weight:500;">Abilita tagliandini postazione</span>
+      </label>
+    </div>
+
+    <div class="save-bar" id="saveBar" style="display:none;">
+      <button class="btn btn-save" id="saveBtn" onclick="saveConfig()">Salva modifiche</button>
     </div>
   </div>
 
@@ -653,16 +676,24 @@
       }
     }
 
-    /* ───── Categories ───── */
+    /* ───── Categories & Stations ───── */
     var categories = [];
     var selectedIds = [];
     var originalIds = [];
+
+    var stationTicketsEnabled = false;
 
     function showToast(msg, type) {
       var t = document.getElementById('toast');
       t.textContent = msg;
       t.className = 'toast ' + type + ' show';
       setTimeout(function () { t.className = 'toast'; }, 3000);
+    }
+
+    function escHtml(s) {
+      var d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
     }
 
     async function loadData() {
@@ -681,11 +712,13 @@
         var config = await configResp.json();
         selectedIds = config.singleTicketCategories || [];
         originalIds = selectedIds.slice();
+        stationTicketsEnabled = !!config.stationTicketsEnabled;
 
-        // Sort categories by position
         categories.sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
 
         renderTable();
+        document.getElementById('stationTicketsToggle').checked = stationTicketsEnabled;
+        document.getElementById('saveBar').style.display = 'flex';
       } catch (err) {
         document.getElementById('categoriesContainer').innerHTML =
           '<div class="loading" style="color:#f87171;">Errore nel caricamento delle categorie</div>';
@@ -722,23 +755,18 @@
 
       html += '</tbody></table>';
       document.getElementById('categoriesContainer').innerHTML = '<div class="table-scroll">' + html + '</div>';
-      document.getElementById('saveBar').style.display = 'flex';
-    }
-
-    function escHtml(s) {
-      var d = document.createElement('div');
-      d.textContent = s;
-      return d.innerHTML;
     }
 
     function onCheckChange() {
-      var checkboxes = document.querySelectorAll('.category-table input[type="checkbox"]');
+      var checkboxes = document.querySelectorAll('#categoriesContainer input[type="checkbox"]');
       selectedIds = [];
       for (var i = 0; i < checkboxes.length; i++) {
-        if (checkboxes[i].checked) {
-          selectedIds.push(checkboxes[i].getAttribute('data-id'));
-        }
+        if (checkboxes[i].checked) selectedIds.push(checkboxes[i].getAttribute('data-id'));
       }
+    }
+
+    function onStationToggleChange() {
+      stationTicketsEnabled = document.getElementById('stationTicketsToggle').checked;
     }
 
     async function saveConfig() {
@@ -750,7 +778,10 @@
         var resp = await fetch('/api/config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ singleTicketCategories: selectedIds })
+          body: JSON.stringify({
+            singleTicketCategories: selectedIds,
+            stationTicketsEnabled: stationTicketsEnabled
+          })
         });
 
         if (resp.ok) {
@@ -770,7 +801,6 @@
 
     loadData();
     loadPrinters();
-    // Refresh printer status in UI every 10 seconds
     printersRefreshInterval = setInterval(loadPrinters, 10000);
   </script>
 </body>

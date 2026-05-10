@@ -232,6 +232,9 @@ export interface IncomingOrder {
    * `reprint-order`.
    */
   reprintReceipt?: boolean;
+
+  /** Station IDs included in this order (from confirmed-order SSE payload). */
+  ordersStations?: string[] | null;
 }
 
 /**

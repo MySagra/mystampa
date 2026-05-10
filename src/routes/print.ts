@@ -30,6 +30,7 @@ import {
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
+import { getStationsCache, getCategoryToStationMap } from "../utils/stationsCache";
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
 import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 
@@ -180,6 +181,8 @@ export async function handlePrintOrder(
     ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
     : [];
 
+  const stationTicketsEnabled = process.env.STATION_TICKETS_ENABLED === 'true';
+
   // Determine which items go to kitchen printers.
   // For reprint-order events, use reprintOrderItems exclusively (even if empty = no kitchen print).
   // For normal confirmed-order events (reprintOrderItems undefined), use orderItems.
@@ -252,6 +255,30 @@ export async function handlePrintOrder(
     const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
     if (categoryId && targetCategoryIds.includes(String(categoryId))) {
       singleTickets.push({ foodName, quantity: qty, notes });
+    }
+  }
+
+  // Build station tickets grouped by station.
+  // Uses categoryId (stable) instead of foodId to handle foods added after cache refresh.
+  const stationTickets: { stationName: string; lines: KitchenReceiptLine[] }[] = [];
+  if (stationTicketsEnabled && Array.isArray(order.ordersStations) && order.ordersStations.length > 0) {
+    const stationsCache = getStationsCache();
+    const catToStation = getCategoryToStationMap();
+    for (const stationId of order.ordersStations) {
+      const station = stationsCache.find(s => s.id === stationId);
+      if (!station) continue;
+      const stationLines: KitchenReceiptLine[] = [];
+      for (const it of order.orderItems) {
+        const fId = it.foodId || it.food?.id;
+        const apiFood = fId ? foodDetails.get(fId) : undefined;
+        const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
+        if (!categoryId || catToStation.get(categoryId) !== stationId) continue;
+        const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
+        stationLines.push({ foodName, quantity: it.quantity ?? 1, notes: it.notes ?? null });
+      }
+      if (stationLines.length > 0) {
+        stationTickets.push({ stationName: station.name, lines: stationLines });
+      }
     }
   }
 
@@ -345,7 +372,7 @@ export async function handlePrintOrder(
     console.log("[Print] reprintReceipt=false, skipping cash receipt");
   } else if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
-    const receipt = await buildCashReceipt(order, cashLines, singleTickets);
+    const receipt = await buildCashReceipt(order, cashLines, singleTickets, stationTickets);
     if (pr) {
       printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {

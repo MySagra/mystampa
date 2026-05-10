@@ -283,7 +283,8 @@ export function buildKitchenReceipt(
 export async function buildCashReceipt(
   order: IncomingOrder,
   lines: CashReceiptLine[],
-  singleTickets?: KitchenReceiptLine[]
+  singleTickets?: KitchenReceiptLine[],
+  stationTickets?: { stationName: string; lines: KitchenReceiptLine[] }[]
 ): Promise<(string | Buffer)[]> {
   const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
@@ -515,6 +516,64 @@ export async function buildCashReceipt(
       }
 
       ticketStr += `\n`;
+      parts.push(ticketStr);
+
+      if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {
+        parts.push(mysagraFooterBuf);
+      }
+    }
+  }
+
+  // =========================
+  // STATION TICKETS
+  // =========================
+  if (stationTickets && stationTickets.length > 0) {
+    const ESC2 = "\x1B";
+    const FEED_AND_CUT2 = Buffer.from(ESC2 + "d" + "\x06" + ESC2 + "i", "ascii");
+    const GS2 = "\x1D";
+    const TXT_BIG2 = GS2 + "!" + "\x11";
+    const TXT_MEDIUM2 = GS2 + "!" + "\x01";
+    const TXT_NORMAL2 = GS2 + "!" + "\x00";
+    const BOLD_ON2 = ESC2 + "E" + "\x01";
+    const BOLD_OFF2 = ESC2 + "E" + "\x00";
+
+    for (const station of stationTickets) {
+      parts.push(FEED_AND_CUT2);
+
+      // Identificatore ordine grande (numero o codice in base a SHOW_NUMBERS)
+      const orderIdLabel = SHOW_NUMBERS
+        ? (order.ticketNumber != null ? `N° ${order.ticketNumber}` : trimStr(order.displayCode))
+        : (trimStr(order.displayCode) || (order.ticketNumber != null ? `N° ${order.ticketNumber}` : ''));
+
+      let ticketStr = `\n\n`;
+      if (orderIdLabel) {
+        ticketStr += `${TXT_BIG2}${BOLD_ON2}${orderIdLabel}${BOLD_OFF2}${TXT_NORMAL2}\n`;
+      }
+      ticketStr += `${TXT_BIG2}${BOLD_ON2}RITIRA A: ${trimStr(station.stationName).toUpperCase()}${BOLD_OFF2}${TXT_NORMAL2}\n`;
+
+      // Riga secondaria: info complementare + cliente
+      let subTitle = "";
+      if (SHOW_NUMBERS) {
+        if (trimStr(order.displayCode)) subTitle += `COD: ${trimStr(order.displayCode)}`;
+      } else {
+        if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
+      }
+      if (trimStr(order.customer)) {
+        if (subTitle) subTitle += ` - `;
+        subTitle += `CLIENTE: ${trimStr(order.customer)}`;
+      }
+      if (subTitle) ticketStr += `${cut(subTitle, RECEIPT_W)}\n`;
+
+      ticketStr += "\n";
+      for (const item of station.lines) {
+        const qty = item.quantity ?? 1;
+        const name = trimStr(item.foodName).toUpperCase();
+        ticketStr += `${TXT_MEDIUM2}${qty}x ${name}${TXT_NORMAL2}\n`;
+        if (trimStr(item.notes)) {
+          ticketStr += `  -> ${trimStr(item.notes)}\n`;
+        }
+      }
+      ticketStr += "\n";
       parts.push(ticketStr);
 
       if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {

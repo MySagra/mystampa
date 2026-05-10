@@ -19,6 +19,7 @@ import { handlePrintOrder, handleOrderCancelled } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
+import { fetchAndCacheStations, getStationsCache } from './utils/stationsCache';
 
 
 dotenv.config();
@@ -117,7 +118,9 @@ async function startSSE(): Promise<void> {
                     console.log(`SSE received event (type=${eventType}):`, payload);
 
                     if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
-                      const result = await handlePrintOrder(payload, printers);
+                      const order = payload.createdOrder ?? payload;
+                      if (payload.ordersStations) order.ordersStations = payload.ordersStations;
+                      const result = await handlePrintOrder(order, printers);
                       if (result.ok) {
                         console.log('SSE: print order handled successfully', result);
                       } else {
@@ -192,6 +195,9 @@ async function initialize(): Promise<void> {
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
   runPrinterStatusCheck();
 
+  // Initial stations fetch
+  await fetchAndCacheStations(API_URL, API_KEY);
+
   // Refresh printers every 2 minutes (120000 ms).
   // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
   let isUpdatingPrinters = false;
@@ -208,6 +214,9 @@ async function initialize(): Promise<void> {
       isUpdatingPrinters = false;
     }
   }, 120000);
+
+  // Refresh stations every 5 minutes
+  setInterval(() => fetchAndCacheStations(API_URL, API_KEY), 5 * 60 * 1000);
 
   startSSE().catch((err) => {
     console.error('Error starting SSE listener:', err);
@@ -333,6 +342,10 @@ try {
     if (savedConfig.singleTicketCategories) {
       process.env.SINGLE_TICKET_CATEGORIES = savedConfig.singleTicketCategories.join(',');
       console.log('Loaded single ticket categories from config.json');
+    }
+    if (savedConfig.stationTicketsEnabled !== undefined) {
+      process.env.STATION_TICKETS_ENABLED = savedConfig.stationTicketsEnabled ? 'true' : 'false';
+      console.log('Loaded stationTicketsEnabled from config.json:', savedConfig.stationTicketsEnabled);
     }
   }
 } catch (e) {
@@ -460,28 +473,33 @@ app.get('/config', (req: Request, res: Response) => {
 /**
  * Read the config file asynchronously. Returns default empty config if file doesn't exist.
  */
-async function readConfig(): Promise<{ singleTicketCategories: string[] }> {
+interface AppConfig {
+  singleTicketCategories: string[];
+  stationTicketsEnabled: boolean;
+}
+
+async function readConfig(): Promise<AppConfig> {
   try {
     await fs.promises.access(CONFIG_FILE);
     const raw = await fs.promises.readFile(CONFIG_FILE, 'utf-8');
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return {
+      singleTicketCategories: parsed.singleTicketCategories ?? [],
+      stationTicketsEnabled: parsed.stationTicketsEnabled ?? false,
+    };
   } catch (e) {
-    // ENOENT is expected when the file hasn't been created yet
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error('Failed to read config file:', e);
     }
   }
-  return { singleTicketCategories: [] };
+  return { singleTicketCategories: [], stationTicketsEnabled: false };
 }
 
-/**
- * Write config to file asynchronously and update env variable.
- */
-async function writeConfig(config: { singleTicketCategories: string[] }): Promise<void> {
+async function writeConfig(config: AppConfig): Promise<void> {
   await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
   await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
-  // Update env so print handler picks up new values
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
+  process.env.STATION_TICKETS_ENABLED = config.stationTicketsEnabled ? 'true' : 'false';
 }
 
 /**
@@ -535,11 +553,15 @@ app.get('/api/config', async (req: Request, res: Response) => {
 app.post('/api/config', async (req: Request, res: Response) => {
   if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories } = req.body;
+  const { singleTicketCategories, stationTicketsEnabled } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
-  const config = { singleTicketCategories };
+  const current = await readConfig();
+  const config: AppConfig = {
+    singleTicketCategories,
+    stationTicketsEnabled: stationTicketsEnabled !== undefined ? Boolean(stationTicketsEnabled) : current.stationTicketsEnabled,
+  };
   try {
     await writeConfig(config);
   } catch (e) {
@@ -547,6 +569,15 @@ app.post('/api/config', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Failed to save config' });
   }
   return res.json({ ok: true, config });
+});
+
+/**
+ * GET /api/stations - Return cached stations list
+ */
+app.get('/api/stations', (req: Request, res: Response) => {
+  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
+  return res.json(getStationsCache().map((s) => ({ id: s.id, name: s.name })));
 });
 
 /**
