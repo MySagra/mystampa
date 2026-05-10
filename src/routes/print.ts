@@ -373,11 +373,11 @@ export async function handlePrintOrder(
     const receipt = await buildCashReceipt(order, cashLines, singleTickets, stationTickets);
     if (pr) {
       printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
-      // If payment is CASH, open drawer after receipt
+      // If payment is CASH, open drawer (fire-and-forget, no queue on failure)
       if (order.paymentMethod === 'CASH') {
-        printJobs.push(sendDrawerOpen(pr.ip, pr.port).catch(err => {
-          console.warn(`[Print] Failed to open drawer for ${cashRegisterPrinterId}:`, err);
-        }));
+        sendDrawerOpen(pr.ip, pr.port).catch(err => {
+          console.warn(`[Print] Drawer open failed for ${cashRegisterPrinterId}:`, err.message);
+        });
       }
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
