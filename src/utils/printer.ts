@@ -659,6 +659,15 @@ export async function sendToPrinter(
 }
 
 /**
+ * Send drawer open command (cash register) via ESC/POS to a network printer.
+ * Command: ESC p 0 m (0x1B 0x70 0x00 0x32) opens the drawer with 50ms pulse.
+ */
+export async function sendDrawerOpen(ip: string, port: number): Promise<void> {
+  const drawerCmd = Buffer.from([0x1B, 0x70, 0x00, 0x32]); // ESC p 0 50ms
+  await sendToPrinter(ip, port, drawerCmd);
+}
+
+/**
  * Check the printer status (specifically paper status) before printing.
  * Returns "OK", "CARTA_QUASI_FINITA", or "CARTA_FINITA".
  * Throws error if connection fails or timeout.

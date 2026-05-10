@@ -27,10 +27,10 @@ import {
   buildCancellationReceipt,
   sendToPrinter,
   getPrinterStatus,
+  sendDrawerOpen,
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
-import { getStationsCache, getCategoryToStationMap } from "../utils/stationsCache";
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
 import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 
@@ -259,25 +259,23 @@ export async function handlePrintOrder(
   }
 
   // Build station tickets grouped by station.
-  // Uses categoryId (stable) instead of foodId to handle foods added after cache refresh.
+  // Stations are now embedded in orderItems (food.category.station), no cache needed.
   const stationTickets: { stationName: string; lines: KitchenReceiptLine[] }[] = [];
-  if (stationTicketsEnabled && Array.isArray(order.ordersStations) && order.ordersStations.length > 0) {
-    const stationsCache = getStationsCache();
-    const catToStation = getCategoryToStationMap();
-    for (const stationId of order.ordersStations) {
-      const station = stationsCache.find(s => s.id === stationId);
+  if (stationTicketsEnabled) {
+    const stationMap = new Map<string, { name: string; lines: KitchenReceiptLine[] }>();
+    for (const it of order.orderItems) {
+      const station = it.food?.category?.station;
       if (!station) continue;
-      const stationLines: KitchenReceiptLine[] = [];
-      for (const it of order.orderItems) {
-        const fId = it.foodId || it.food?.id;
-        const apiFood = fId ? foodDetails.get(fId) : undefined;
-        const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
-        if (!categoryId || catToStation.get(categoryId) !== stationId) continue;
-        const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
-        stationLines.push({ foodName, quantity: it.quantity ?? 1, notes: it.notes ?? null });
+      const stationId = station.id;
+      const foodName = it.food?.name ?? `FOOD(${it.id})`;
+      if (!stationMap.has(stationId)) {
+        stationMap.set(stationId, { name: station.name, lines: [] });
       }
-      if (stationLines.length > 0) {
-        stationTickets.push({ stationName: station.name, lines: stationLines });
+      stationMap.get(stationId)?.lines.push({ foodName, quantity: it.quantity ?? 1, notes: it.notes ?? null });
+    }
+    for (const { name, lines } of stationMap.values()) {
+      if (lines.length > 0) {
+        stationTickets.push({ stationName: name, lines });
       }
     }
   }
@@ -375,6 +373,12 @@ export async function handlePrintOrder(
     const receipt = await buildCashReceipt(order, cashLines, singleTickets, stationTickets);
     if (pr) {
       printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
+      // If payment is CASH, open drawer after receipt
+      if (order.paymentMethod === 'CASH') {
+        printJobs.push(sendDrawerOpen(pr.ip, pr.port).catch(err => {
+          console.warn(`[Print] Failed to open drawer for ${cashRegisterPrinterId}:`, err);
+        }));
+      }
     } else {
       console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
       console.log(receipt);

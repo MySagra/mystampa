@@ -19,7 +19,6 @@ import { handlePrintOrder, handleOrderCancelled } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
-import { fetchAndCacheStations, getStationsCache } from './utils/stationsCache';
 
 
 dotenv.config();
@@ -119,7 +118,6 @@ async function startSSE(): Promise<void> {
 
                     if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
                       const order = payload.createdOrder ?? payload;
-                      if (payload.ordersStations) order.ordersStations = payload.ordersStations;
                       const result = await handlePrintOrder(order, printers);
                       if (result.ok) {
                         console.log('SSE: print order handled successfully', result);
@@ -195,9 +193,6 @@ async function initialize(): Promise<void> {
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
   runPrinterStatusCheck();
 
-  // Initial stations fetch
-  await fetchAndCacheStations(API_URL, API_KEY);
-
   // Refresh printers every 2 minutes (120000 ms).
   // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
   let isUpdatingPrinters = false;
@@ -214,9 +209,6 @@ async function initialize(): Promise<void> {
       isUpdatingPrinters = false;
     }
   }, 120000);
-
-  // Refresh stations every 5 minutes
-  setInterval(() => fetchAndCacheStations(API_URL, API_KEY), 5 * 60 * 1000);
 
   startSSE().catch((err) => {
     console.error('Error starting SSE listener:', err);
@@ -569,15 +561,6 @@ app.post('/api/config', async (req: Request, res: Response) => {
     return res.status(500).json({ error: 'Failed to save config' });
   }
   return res.json({ ok: true, config });
-});
-
-/**
- * GET /api/stations - Return cached stations list
- */
-app.get('/api/stations', (req: Request, res: Response) => {
-  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  return res.json(getStationsCache().map((s) => ({ id: s.id, name: s.name })));
 });
 
 /**

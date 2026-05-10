@@ -184,6 +184,14 @@ export interface OrderItemIn {
     name: string;
     printerId?: string | null;
     categoryId?: string | null;
+    category?: {
+      id: string;
+      name: string;
+      station?: {
+        id: string;
+        name: string;
+      } | null;
+    };
   };
 }
 
@@ -232,9 +240,6 @@ export interface IncomingOrder {
    * `reprint-order`.
    */
   reprintReceipt?: boolean;
-
-  /** Station IDs included in this order (from confirmed-order SSE payload). */
-  ordersStations?: string[] | null;
 }
 
 /**
