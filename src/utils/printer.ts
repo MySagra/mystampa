@@ -661,10 +661,47 @@ export async function sendToPrinter(
 /**
  * Send drawer open command (cash register) via ESC/POS to a network printer.
  * Command: ESC p 0 m (0x1B 0x70 0x00 0x32) opens the drawer with 50ms pulse.
+ * Uses a raw TCP connection to avoid sendToPrinter appending SELECT_CP858 + FEED_AND_CUT.
  */
 export async function sendDrawerOpen(ip: string, port: number): Promise<void> {
+  const ipClean = trimStr(ip);
+  const portClean = Number(port);
+
+  if (!ipClean || !Number.isFinite(portClean) || portClean <= 0) {
+    throw new Error(`Invalid printer address ip="${ip}" port="${port}"`);
+  }
+
   const drawerCmd = Buffer.from([0x1B, 0x70, 0x00, 0x32]); // ESC p 0 50ms
-  await sendToPrinter(ip, port, drawerCmd);
+
+  return new Promise((resolve, reject) => {
+    const client = new net.Socket();
+    let settled = false;
+
+    const overallTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.destroy();
+        reject(new Error(`Timeout: drawer open printer ${ipClean}:${portClean}`));
+      }
+    }, 5000);
+
+    client.connect(portClean, ipClean, () => {
+      client.write(drawerCmd, () => {
+        clearTimeout(overallTimeout);
+        settled = true;
+        client.end();
+        resolve();
+      });
+    });
+
+    client.on("error", (err) => {
+      clearTimeout(overallTimeout);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+  });
 }
 
 /**
