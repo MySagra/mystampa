@@ -17,6 +17,7 @@ import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder, handleOrderCancelled } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
+import { sendDrawerOpen } from './utils/printer';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
 
@@ -137,6 +138,16 @@ async function startSSE(): Promise<void> {
                         console.log('SSE: general closure handled successfully', result);
                       } else {
                         console.error('SSE: general closure failed:', result.error);
+                      }
+                    } else if (eventType === 'open-drawer') {
+                      const printerId = payload.printerId;
+                      const pr = printers.find(p => p.id === printerId);
+                      if (pr) {
+                        sendDrawerOpen(pr.ip, pr.port).catch(err => {
+                          console.warn(`SSE: drawer open failed for ${printerId}:`, err.message);
+                        });
+                      } else {
+                        console.warn(`SSE: no printer found for open-drawer printerId=${printerId}`);
                       }
                     } else {
                       console.log(`SSE: ignoring event type '${eventType}'`);
