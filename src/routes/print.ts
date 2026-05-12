@@ -27,6 +27,7 @@ import {
   buildCancellationReceipt,
   sendToPrinter,
   getPrinterStatus,
+  openCashDrawer,
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
@@ -434,4 +435,78 @@ export async function handleOrderCancelled(
   await Promise.allSettled(printJobs);
 
   return { ok: true };
+}
+
+export async function handleOpenDrawer(
+  payload: { printerId: string },
+  printers: Printer[]
+): Promise<{ ok: boolean; error?: string }> {
+  const printer = printers.find((p) => p.id === payload.printerId);
+  if (!printer) {
+    return { ok: false, error: `Printer not found: ${payload.printerId}` };
+  }
+
+  const ip = resolveEffectiveIp(printer.ip, printer.mac);
+  if (!ip) {
+    return { ok: false, error: `No address for printer ${printer.id}` };
+  }
+
+  try {
+    await openCashDrawer(ip, printer.port);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+export async function handleOpenDrawerByCashRegister(
+  cashRegisterId: string,
+  printers: Printer[]
+): Promise<{ ok: boolean; error?: string }> {
+  const crId = trimStr(cashRegisterId);
+  if (!crId) return { ok: false, error: 'Missing cashRegisterId' };
+
+  let printerId = '';
+  let embeddedIp: string | null = null;
+  let embeddedPort: number = 0;
+  let embeddedMac: string | null = null;
+
+  try {
+    const r = await axiosInstance.get<CashRegisterFromApi>(
+      `${API_URL}/v1/cash-registers/${crId}?include=printer`,
+      { headers: { Accept: 'application/json', 'X-API-KEY': apiKey } }
+    );
+    printerId = trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
+    if (r.data.defaultPrinter) {
+      embeddedIp = r.data.defaultPrinter.ip ? trimStr(r.data.defaultPrinter.ip) : null;
+      embeddedPort = parsePort(r.data.defaultPrinter.port);
+      embeddedMac = r.data.defaultPrinter.mac ? trimStr(r.data.defaultPrinter.mac) : null;
+    }
+  } catch (e) {
+    return { ok: false, error: `cash-register fetch failed: ${crId}` };
+  }
+
+  if (!printerId) return { ok: false, error: `No printer for cash-register ${crId}` };
+
+  let ip = embeddedIp || '';
+  let port = embeddedPort;
+  let mac = embeddedMac;
+
+  if (!ip || port <= 0) {
+    const cached = printers.find((p) => trimStr(p.id) === printerId);
+    if (!cached) return { ok: false, error: `Printer not found: ${printerId}` };
+    ip = trimStr(cached.ip);
+    port = parsePort(cached.port);
+    mac = cached.mac ? trimStr(cached.mac) : null;
+  }
+
+  const effectiveIp = resolveEffectiveIp(ip, mac);
+  if (!effectiveIp) return { ok: false, error: `No address for printer ${printerId}` };
+
+  try {
+    await openCashDrawer(effectiveIp, port);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 }

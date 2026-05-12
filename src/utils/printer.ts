@@ -659,6 +659,52 @@ export async function sendToPrinter(
 }
 
 /**
+ * Open cash drawer connected to printer via ESC/POS pin-2 pulse.
+ * Fire-and-forget: rejects on connection failure (caller logs).
+ */
+export async function openCashDrawer(ip: string, port: number): Promise<void> {
+  const ipClean = ip.trim();
+  const portClean = Number(port);
+
+  if (!ipClean || !Number.isFinite(portClean) || portClean <= 0) {
+    throw new Error(`Invalid printer address ip="${ip}" port="${port}"`);
+  }
+
+  // ESC p 0 t1 t2 — pin 2, 50ms on, 500ms off
+  const OPEN_DRAWER = Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa]);
+
+  return new Promise((resolve, reject) => {
+    const client = new net.Socket();
+    let settled = false;
+
+    const overallTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.destroy();
+        reject(new Error(`Timeout: printer ${ipClean}:${portClean} did not respond`));
+      }
+    }, 5000);
+
+    client.connect(portClean, ipClean, () => {
+      client.write(OPEN_DRAWER, () => {
+        clearTimeout(overallTimeout);
+        settled = true;
+        client.end();
+        resolve();
+      });
+    });
+
+    client.on('error', (err) => {
+      clearTimeout(overallTimeout);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
  * Check the printer status (specifically paper status) before printing.
  * Returns "OK", "CARTA_QUASI_FINITA", or "CARTA_FINITA".
  * Throws error if connection fails or timeout.

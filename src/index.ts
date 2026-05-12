@@ -15,7 +15,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { Printer } from './models';
-import { handlePrintOrder, handleOrderCancelled } from './routes/print';
+import { handlePrintOrder, handleOrderCancelled, handleOpenDrawer, handleOpenDrawerByCashRegister } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
@@ -118,6 +118,14 @@ async function startSSE(): Promise<void> {
 
                     if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
                       const order = payload.createdOrder ?? payload;
+                      if (eventType === 'confirmed-order' && String(order.paymentMethod ?? '').toUpperCase() === 'CASH' && order.cashRegisterId) {
+                        handleOpenDrawerByCashRegister(String(order.cashRegisterId), printers)
+                          .then((r) => {
+                            if (r.ok) console.log('SSE: cash drawer opened for confirmed-order');
+                            else console.error('SSE: cash drawer open failed:', r.error);
+                          })
+                          .catch((e) => console.error('SSE: cash drawer open error:', e));
+                      }
                       const result = await handlePrintOrder(order, printers);
                       if (result.ok) {
                         console.log('SSE: print order handled successfully', result);
@@ -137,6 +145,13 @@ async function startSSE(): Promise<void> {
                         console.log('SSE: general closure handled successfully', result);
                       } else {
                         console.error('SSE: general closure failed:', result.error);
+                      }
+                    } else if (eventType === 'open-drawer') {
+                      const result = await handleOpenDrawer(payload, printers);
+                      if (result.ok) {
+                        console.log('SSE: cash drawer opened successfully');
+                      } else {
+                        console.error('SSE: cash drawer open failed:', result.error);
                       }
                     } else {
                       console.log(`SSE: ignoring event type '${eventType}'`);
