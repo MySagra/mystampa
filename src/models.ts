@@ -184,6 +184,14 @@ export interface OrderItemIn {
     name: string;
     printerId?: string | null;
     categoryId?: string | null;
+    category?: {
+      id: string;
+      name: string;
+      station?: {
+        id: string;
+        name: string;
+      } | null;
+    };
   };
 }
 

@@ -25,6 +25,8 @@ import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
 
+const SHOW_NUMBERS = process.env.SHOW_NUMBERS === 'true';
+
 /**
  * Types representing individual lines that will appear on receipts.
  *
@@ -159,9 +161,12 @@ export function buildKitchenReceipt(
 
   // ESC/POS size
   const GS = "\x1D";
+  const ESC = "\x1B";
   const TXT_NORMAL = GS + "!" + "\x00";
   const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
   const TXT_MEDIUM = GS + "!" + "\x01"; // double height only (slightly bigger)
+  const BOLD_ON = ESC + "E" + "\x01";
+  const BOLD_OFF = ESC + "E" + "\x00";
 
   // =========================
   // HEADER (esattamente come richiesto)
@@ -169,8 +174,10 @@ export function buildKitchenReceipt(
   out.push("");
 
   let topInfo = `PROGR: ${progress}`;
-  if (trimStr(order.displayCode)) {
-    topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null) topInfo = `N°: ${order.ticketNumber} - ${topInfo}`;
+  } else {
+    if (trimStr(order.displayCode)) topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
   }
 
   // Aggiunta ORA sulla stessa riga (se c'è spazio, o andrà accapo automaticamente se troppo lungo)
@@ -200,7 +207,7 @@ export function buildKitchenReceipt(
   const hasTable = order.table !== "NO_TABLE_PRESET";
 
   // Metti TAVOLO e PROGR sulla stessa riga, se possibile
-  const tavProgLine = hasTable ? `N°: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
+  const tavProgLine = hasTable ? `PROGR: ${progress} - TAVOLO: ${table}` : `N°: ${progress}`;
   out.push(TXT_BIG + cut(tavProgLine, Math.floor(RECEIPT_W / 2)) + TXT_NORMAL); // TXT_BIG dimezza i caratteri stampabili sulla riga (circa 24 totali)
 
   if (customer !== "-") {
@@ -217,8 +224,15 @@ export function buildKitchenReceipt(
     }
   }
 
-  if (trimStr(order.displayCode))
-    out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null)
+      out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.displayCode))
+      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+  } else {
+    if (trimStr(order.displayCode))
+      out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
+  }
 
   out.push(line("-"));
 
@@ -269,7 +283,8 @@ export function buildKitchenReceipt(
 export async function buildCashReceipt(
   order: IncomingOrder,
   lines: CashReceiptLine[],
-  singleTickets?: KitchenReceiptLine[]
+  singleTickets?: KitchenReceiptLine[],
+  stationTickets?: { stationName: string; lines: KitchenReceiptLine[] }[]
 ): Promise<(string | Buffer)[]> {
   const RECEIPT_W = 48; // Font A su 80mm usa 48 caratteri
 
@@ -314,10 +329,17 @@ export async function buildCashReceipt(
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
   
-  if (trimStr(order.displayCode))
-    out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
-  if (trimStr(order.ticketNumber))
-    out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
+  if (SHOW_NUMBERS) {
+    if (order.ticketNumber != null)
+      out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.displayCode))
+      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+  } else {
+    if (trimStr(order.displayCode))
+      out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
+    if (trimStr(order.ticketNumber))
+      out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
+  }
   if (trimStr(order.table) !== "NO_TABLE_PRESET")
     out.push(cut(`TAVOLO: ${trimStr(order.table) || "-"}`, RECEIPT_W));
   out.push(cut(`CLIENTE: ${trimStr(order.customer) || "-"}`, RECEIPT_W));
@@ -475,7 +497,15 @@ export async function buildCashReceipt(
       let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
 
       let subTitle = "";
-      if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      if (SHOW_NUMBERS) {
+        if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
+        if (trimStr(order.displayCode)) {
+          if (subTitle) subTitle += ` - `;
+          subTitle += `COD: ${trimStr(order.displayCode)}`;
+        }
+      } else {
+        if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+      }
       if (trimStr(order.customer)) {
         if (subTitle) subTitle += ` - `;
         subTitle += `CLIENTE: ${trimStr(order.customer)}`;
@@ -486,6 +516,64 @@ export async function buildCashReceipt(
       }
 
       ticketStr += `\n`;
+      parts.push(ticketStr);
+
+      if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {
+        parts.push(mysagraFooterBuf);
+      }
+    }
+  }
+
+  // =========================
+  // STATION TICKETS
+  // =========================
+  if (stationTickets && stationTickets.length > 0) {
+    const ESC2 = "\x1B";
+    const FEED_AND_CUT2 = Buffer.from(ESC2 + "d" + "\x06" + ESC2 + "i", "ascii");
+    const GS2 = "\x1D";
+    const TXT_BIG2 = GS2 + "!" + "\x11";
+    const TXT_MEDIUM2 = GS2 + "!" + "\x01";
+    const TXT_NORMAL2 = GS2 + "!" + "\x00";
+    const BOLD_ON2 = ESC2 + "E" + "\x01";
+    const BOLD_OFF2 = ESC2 + "E" + "\x00";
+
+    for (const station of stationTickets) {
+      parts.push(FEED_AND_CUT2);
+
+      // Identificatore ordine grande (numero o codice in base a SHOW_NUMBERS)
+      const orderIdLabel = SHOW_NUMBERS
+        ? (order.ticketNumber != null ? `N° ${order.ticketNumber}` : trimStr(order.displayCode))
+        : (trimStr(order.displayCode) || (order.ticketNumber != null ? `N° ${order.ticketNumber}` : ''));
+
+      let ticketStr = `\n\n`;
+      if (orderIdLabel) {
+        ticketStr += `${TXT_BIG2}${BOLD_ON2}${orderIdLabel}${BOLD_OFF2}${TXT_NORMAL2}\n`;
+      }
+      ticketStr += `${TXT_BIG2}${BOLD_ON2}RITIRA A: ${trimStr(station.stationName).toUpperCase()}${BOLD_OFF2}${TXT_NORMAL2}\n`;
+
+      // Riga secondaria: info complementare + cliente
+      let subTitle = "";
+      if (SHOW_NUMBERS) {
+        if (trimStr(order.displayCode)) subTitle += `COD: ${trimStr(order.displayCode)}`;
+      } else {
+        if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
+      }
+      if (trimStr(order.customer)) {
+        if (subTitle) subTitle += ` - `;
+        subTitle += `CLIENTE: ${trimStr(order.customer)}`;
+      }
+      if (subTitle) ticketStr += `${cut(subTitle, RECEIPT_W)}\n`;
+
+      ticketStr += "\n";
+      for (const item of station.lines) {
+        const qty = item.quantity ?? 1;
+        const name = trimStr(item.foodName).toUpperCase();
+        ticketStr += `${TXT_MEDIUM2}${qty}x ${name}${TXT_NORMAL2}\n`;
+        if (trimStr(item.notes)) {
+          ticketStr += `  -> ${trimStr(item.notes)}\n`;
+        }
+      }
+      ticketStr += "\n";
       parts.push(ticketStr);
 
       if (mysagraFooterBuf && mysagraFooterBuf.length > 0) {
@@ -571,6 +659,52 @@ export async function sendToPrinter(
 }
 
 /**
+ * Open cash drawer connected to printer via ESC/POS pin-2 pulse.
+ * Fire-and-forget: rejects on connection failure (caller logs).
+ */
+export async function openCashDrawer(ip: string, port: number): Promise<void> {
+  const ipClean = ip.trim();
+  const portClean = Number(port);
+
+  if (!ipClean || !Number.isFinite(portClean) || portClean <= 0) {
+    throw new Error(`Invalid printer address ip="${ip}" port="${port}"`);
+  }
+
+  // ESC p 0 t1 t2 — pin 2, 50ms on, 500ms off
+  const OPEN_DRAWER = Buffer.from([0x1b, 0x70, 0x00, 0x19, 0xfa]);
+
+  return new Promise((resolve, reject) => {
+    const client = new net.Socket();
+    let settled = false;
+
+    const overallTimeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        client.destroy();
+        reject(new Error(`Timeout: printer ${ipClean}:${portClean} did not respond`));
+      }
+    }, 5000);
+
+    client.connect(portClean, ipClean, () => {
+      client.write(OPEN_DRAWER, () => {
+        clearTimeout(overallTimeout);
+        settled = true;
+        client.end();
+        resolve();
+      });
+    });
+
+    client.on('error', (err) => {
+      clearTimeout(overallTimeout);
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
  * Check the printer status (specifically paper status) before printing.
  * Returns "OK", "CARTA_QUASI_FINITA", or "CARTA_FINITA".
  * Throws error if connection fails or timeout.
@@ -629,6 +763,7 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
  */
 export function buildCancellationReceipt(
   displayCode: string | null | undefined,
+  ticketNumber: number | null | undefined,
   customer: string | null | undefined,
   table: string | null | undefined,
 ): string {
@@ -647,9 +782,18 @@ export function buildCancellationReceipt(
   const line = (ch = "-") => repeat(ch, RECEIPT_W);
   const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
 
+  const identifier = SHOW_NUMBERS
+    ? (ticketNumber != null ? `N° ${ticketNumber}` : trimStr(displayCode))
+    : trimStr(displayCode);
+
   out.push("");
   out.push(line("="));
-  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + trimStr(displayCode) + BOLD_OFF + TXT_NORMAL);
+  out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + identifier + BOLD_OFF + TXT_NORMAL);
+  if (SHOW_NUMBERS && trimStr(displayCode)) {
+    out.push(TXT_MEDIUM + cut(`CODICE: ${trimStr(displayCode)}`, RECEIPT_W) + TXT_NORMAL);
+  } else if (!SHOW_NUMBERS && ticketNumber != null) {
+    out.push(TXT_MEDIUM + `N°: ${ticketNumber}` + TXT_NORMAL);
+  }
   out.push(line("="));
   out.push("");
 

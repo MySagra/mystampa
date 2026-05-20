@@ -27,6 +27,7 @@ import {
   buildCancellationReceipt,
   sendToPrinter,
   getPrinterStatus,
+  openCashDrawer,
   KitchenReceiptLine,
   CashReceiptLine,
 } from "../utils/printer";
@@ -180,6 +181,8 @@ export async function handlePrintOrder(
     ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
     : [];
 
+  const stationTicketsEnabled = process.env.STATION_TICKETS_ENABLED === 'true';
+
   // Determine which items go to kitchen printers.
   // For reprint-order events, use reprintOrderItems exclusively (even if empty = no kitchen print).
   // For normal confirmed-order events (reprintOrderItems undefined), use orderItems.
@@ -252,6 +255,28 @@ export async function handlePrintOrder(
     const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
     if (categoryId && targetCategoryIds.includes(String(categoryId))) {
       singleTickets.push({ foodName, quantity: qty, notes });
+    }
+  }
+
+  // Build station tickets grouped by station.
+  // Stations are now embedded in orderItems (food.category.station), no cache needed.
+  const stationTickets: { stationName: string; lines: KitchenReceiptLine[] }[] = [];
+  if (stationTicketsEnabled) {
+    const stationMap = new Map<string, { name: string; lines: KitchenReceiptLine[] }>();
+    for (const it of order.orderItems) {
+      const station = it.food?.category?.station;
+      if (!station) continue;
+      const stationId = station.id;
+      const foodName = it.food?.name ?? `FOOD(${it.id})`;
+      if (!stationMap.has(stationId)) {
+        stationMap.set(stationId, { name: station.name, lines: [] });
+      }
+      stationMap.get(stationId)?.lines.push({ foodName, quantity: it.quantity ?? 1, notes: it.notes ?? null });
+    }
+    for (const { name, lines } of stationMap.values()) {
+      if (lines.length > 0) {
+        stationTickets.push({ stationName: name, lines });
+      }
     }
   }
 
@@ -345,7 +370,7 @@ export async function handlePrintOrder(
     console.log("[Print] reprintReceipt=false, skipping cash receipt");
   } else if (cashRegisterPrinterId) {
     const pr = resolvePrinter(cashRegisterPrinterId);
-    const receipt = await buildCashReceipt(order, cashLines, singleTickets);
+    const receipt = await buildCashReceipt(order, cashLines, singleTickets, stationTickets);
     if (pr) {
       printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
     } else {
@@ -393,7 +418,7 @@ export async function handleOrderCancelled(
     return { ok: true };
   }
 
-  const receipt = buildCancellationReceipt(payload.displayCode, payload.customer, payload.table);
+  const receipt = buildCancellationReceipt(payload.displayCode, payload.ticketNumber, payload.customer, payload.table);
 
   const printJobs: Promise<void>[] = [];
   for (const printerId of payload.printers) {
@@ -410,4 +435,78 @@ export async function handleOrderCancelled(
   await Promise.allSettled(printJobs);
 
   return { ok: true };
+}
+
+export async function handleOpenDrawer(
+  payload: { printerId: string },
+  printers: Printer[]
+): Promise<{ ok: boolean; error?: string }> {
+  const printer = printers.find((p) => p.id === payload.printerId);
+  if (!printer) {
+    return { ok: false, error: `Printer not found: ${payload.printerId}` };
+  }
+
+  const ip = resolveEffectiveIp(printer.ip, printer.mac);
+  if (!ip) {
+    return { ok: false, error: `No address for printer ${printer.id}` };
+  }
+
+  try {
+    await openCashDrawer(ip, printer.port);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
+export async function handleOpenDrawerByCashRegister(
+  cashRegisterId: string,
+  printers: Printer[]
+): Promise<{ ok: boolean; error?: string }> {
+  const crId = trimStr(cashRegisterId);
+  if (!crId) return { ok: false, error: 'Missing cashRegisterId' };
+
+  let printerId = '';
+  let embeddedIp: string | null = null;
+  let embeddedPort: number = 0;
+  let embeddedMac: string | null = null;
+
+  try {
+    const r = await axiosInstance.get<CashRegisterFromApi>(
+      `${API_URL}/v1/cash-registers/${crId}?include=printer`,
+      { headers: { Accept: 'application/json', 'X-API-KEY': apiKey } }
+    );
+    printerId = trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
+    if (r.data.defaultPrinter) {
+      embeddedIp = r.data.defaultPrinter.ip ? trimStr(r.data.defaultPrinter.ip) : null;
+      embeddedPort = parsePort(r.data.defaultPrinter.port);
+      embeddedMac = r.data.defaultPrinter.mac ? trimStr(r.data.defaultPrinter.mac) : null;
+    }
+  } catch (e) {
+    return { ok: false, error: `cash-register fetch failed: ${crId}` };
+  }
+
+  if (!printerId) return { ok: false, error: `No printer for cash-register ${crId}` };
+
+  let ip = embeddedIp || '';
+  let port = embeddedPort;
+  let mac = embeddedMac;
+
+  if (!ip || port <= 0) {
+    const cached = printers.find((p) => trimStr(p.id) === printerId);
+    if (!cached) return { ok: false, error: `Printer not found: ${printerId}` };
+    ip = trimStr(cached.ip);
+    port = parsePort(cached.port);
+    mac = cached.mac ? trimStr(cached.mac) : null;
+  }
+
+  const effectiveIp = resolveEffectiveIp(ip, mac);
+  if (!effectiveIp) return { ok: false, error: `No address for printer ${printerId}` };
+
+  try {
+    await openCashDrawer(effectiveIp, port);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
 }
