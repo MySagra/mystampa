@@ -427,12 +427,13 @@ app.post('/login', async (req: Request, res: Response) => {
 
     const setCookieHeader = resp.headers['set-cookie'];
     let tokenValue: string | undefined;
+    let sessionCookieStr: string | undefined;
     if (setCookieHeader) {
       const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
       for (const c of cookieHeaders) {
-        // Match the token name allowing optional spaces around = and before ;
-        const match = c.match(/(?:^|;)\s*mysagra_token\s*=\s*([^;]*)/);
-        if (match) { tokenValue = match[1].trim(); break; }
+        // Match the session cookie name allowing optional spaces around = and before ;
+        const match = c.match(/(?:^|;)\s*mysagra_session\s*=\s*([^;]*)/);
+        if (match) { tokenValue = match[1].trim(); sessionCookieStr = c; break; }
       }
     }
 
@@ -445,11 +446,27 @@ app.post('/login', async (req: Request, res: Response) => {
       return res.render('login', { error: 'Accesso negato: ruolo non autorizzato' });
     }
 
+    // Derive cookie lifetime from upstream Max-Age / Expires, fallback 6h
+    const DEFAULT_MAX_AGE = 6 * 60 * 60 * 1000;
+    let maxAge = DEFAULT_MAX_AGE;
+    if (sessionCookieStr) {
+      const maxAgeMatch = sessionCookieStr.match(/(?:^|;)\s*Max-Age\s*=\s*(\d+)/i);
+      const expiresMatch = sessionCookieStr.match(/(?:^|;)\s*Expires\s*=\s*([^;]+)/i);
+      if (maxAgeMatch) {
+        maxAge = parseInt(maxAgeMatch[1], 10) * 1000;
+      } else if (expiresMatch) {
+        const expMs = Date.parse(expiresMatch[1].trim());
+        if (!isNaN(expMs) && expMs > Date.now()) {
+          maxAge = expMs - Date.now();
+        }
+      }
+    }
+
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
-      maxAge: 6 * 60 * 60 * 1000,
+      maxAge,
     };
     res.cookie('mystampa_session', tokenValue, cookieOptions);
     res.cookie('mystampa_role', role, cookieOptions);
@@ -519,7 +536,7 @@ app.get('/api/categories', async (req: Request, res: Response) => {
   try {
     const resp = await axios.get(`${API_URL}/v1/categories`, {
       timeout: 10000,
-      headers: { Accept: 'application/json', Cookie: `mysagra_token=${token}` },
+      headers: { Accept: 'application/json', Cookie: `mysagra_session=${token}` },
     });
     return res.json(resp.data);
   } catch (err: any) {
