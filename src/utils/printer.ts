@@ -252,7 +252,7 @@ export function buildKitchenReceipt(
     }
 
     if (l.notes && trimStr(l.notes)) {
-      const noteIndent = indent + "  - ";
+      const noteIndent = indent + "  * ";
       // Dividiamo le note per virgola, rimuoviamo gli spazi vuoti e stampiamo ogni nota a capo
       const noteItems = trimStr(l.notes).split(',').map(n => n.trim()).filter(n => n.length > 0);
 
