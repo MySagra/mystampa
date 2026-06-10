@@ -534,35 +534,19 @@ async function writeConfig(config: AppConfig): Promise<void> {
 }
 
 /**
- * GET /api/categories/:id/foods - Fetch foods for a category from external API
- */
-app.get('/api/categories/:id/foods', async (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  try {
-    const resp = await axios.get(`${API_URL}/v1/foods`, {
-      timeout: 10000,
-      params: { categoryId: req.params.id },
-      headers: { Accept: 'application/json', Cookie: `mysagra_token=${token}` },
-    });
-    return res.json(resp.data);
-  } catch (err: any) {
-    console.error('Failed to fetch foods for category:', err.message);
-    return res.status(502).json({ error: 'Failed to fetch foods' });
-  }
-});
-
-/**
- * GET /api/categories - Fetch categories from external API
+ * GET /api/categories - Fetch categories from external API.
+ * Supports ?include=foods to get categories with their foods embedded.
  */
 app.get('/api/categories', async (req: Request, res: Response) => {
   const token = req.cookies?.mystampa_session;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   try {
+    const params: Record<string, string> = {};
+    if (req.query.include) params.include = String(req.query.include);
     const resp = await axios.get(`${API_URL}/v1/categories`, {
       timeout: 10000,
+      params,
       headers: { Accept: 'application/json', Cookie: `mysagra_session=${token}` },
     });
     return res.json(resp.data);

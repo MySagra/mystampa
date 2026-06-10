@@ -456,7 +456,6 @@
 
     /* Food sub-rows */
     .food-row td {
-      background: rgba(0, 0, 0, 0.2);
       border-bottom: 1px solid rgba(255, 255, 255, 0.05);
       padding: 0.5rem 0.75rem;
       font-size: 0.85rem;
@@ -747,7 +746,7 @@
     async function loadData() {
       try {
         var [catResp, configResp] = await Promise.all([
-          fetch('/api/categories'),
+          fetch('/api/categories?include=foods'),
           fetch('/api/config')
         ]);
 
@@ -756,8 +755,15 @@
           return;
         }
 
-        categories = await catResp.json();
+        var catData = await catResp.json();
         var config = await configResp.json();
+
+        categories = catData;
+        foodsCache = {};
+        for (var ci = 0; ci < categories.length; ci++) {
+          var c = categories[ci];
+          if (Array.isArray(c.foods)) foodsCache[c.id] = c.foods;
+        }
         selectedIds = config.singleTicketCategories || [];
         originalIds = selectedIds.slice();
         stationTicketsEnabled = !!config.stationTicketsEnabled;
@@ -812,11 +818,38 @@
     }
 
     function onCheckChange() {
-      var checkboxes = document.querySelectorAll('#categoriesContainer input[type="checkbox"]');
-      selectedIds = [];
+      var checkboxes = document.querySelectorAll('#categoriesContainer input[data-id]');
+      var newSelectedIds = [];
       for (var i = 0; i < checkboxes.length; i++) {
-        if (checkboxes[i].checked) selectedIds.push(checkboxes[i].getAttribute('data-id'));
+        if (checkboxes[i].checked) newSelectedIds.push(checkboxes[i].getAttribute('data-id'));
       }
+
+      for (var j = 0; j < newSelectedIds.length; j++) {
+        var catId = newSelectedIds[j];
+        if (selectedIds.indexOf(catId) === -1) {
+          // Newly checked → clear all exclusions for this category's foods
+          if (foodsCache[catId]) {
+            var foodIds = foodsCache[catId].map(function(f) { return f.id; });
+            excludedFoodIds = excludedFoodIds.filter(function(id) { return foodIds.indexOf(id) === -1; });
+          }
+          syncFoodCheckboxes(catId, true);
+        }
+      }
+
+      for (var k = 0; k < selectedIds.length; k++) {
+        var uncatId = selectedIds[k];
+        if (newSelectedIds.indexOf(uncatId) === -1) {
+          // Newly unchecked → uncheck all food rows visually
+          syncFoodCheckboxes(uncatId, false);
+        }
+      }
+
+      selectedIds = newSelectedIds;
+    }
+
+    function syncFoodCheckboxes(catId, checked) {
+      var rows = document.querySelectorAll('.food-row-' + catId + ' input[data-food-id]');
+      for (var i = 0; i < rows.length; i++) rows[i].checked = checked;
     }
 
     function onStationToggleChange() {
@@ -829,33 +862,10 @@
         expandedCategories[catId] = false;
       } else {
         expandedCategories[catId] = true;
-        if (foodsCache[catId]) {
-          expandCategory(catId, foodsCache[catId]);
-        } else {
-          fetchAndExpandCategory(catId);
-        }
+        expandCategory(catId, foodsCache[catId] || []);
       }
       var btn = document.querySelector('[data-expand-cat="' + catId + '"]');
       if (btn) btn.classList.toggle('expanded', !!expandedCategories[catId]);
-    }
-
-    async function fetchAndExpandCategory(catId) {
-      var tbody = document.querySelector('#categoriesContainer table tbody');
-      var catRow = tbody.querySelector('tr[data-cat-id="' + catId + '"]');
-      var loadingRow = document.createElement('tr');
-      loadingRow.className = 'food-row food-row-' + catId;
-      loadingRow.innerHTML = '<td></td><td colspan="2" style="color:var(--text-muted);font-size:0.82rem;padding:0.5rem 0.75rem;">Caricamento cibi...</td>';
-      catRow.after(loadingRow);
-      try {
-        var resp = await fetch('/api/categories/' + catId + '/foods');
-        var foods = await resp.json();
-        foodsCache[catId] = foods;
-        loadingRow.remove();
-        expandCategory(catId, foods);
-      } catch (e) {
-        loadingRow.innerHTML = '<td></td><td colspan="2" style="color:var(--error);font-size:0.82rem;padding:0.5rem 0.75rem;">Errore nel caricamento</td>';
-        console.error(e);
-      }
     }
 
     function expandCategory(catId, foods) {
@@ -870,16 +880,18 @@
         catRow.after(row);
         return;
       }
+      var catSelected = selectedIds.indexOf(catId) !== -1;
       var insertAfter = catRow;
       for (var i = 0; i < foods.length; i++) {
         var food = foods[i];
         var isExcluded = excludedFoodIds.indexOf(food.id) !== -1;
+        var foodChecked = catSelected && !isExcluded;
         var row = document.createElement('tr');
         row.className = 'food-row food-row-' + catId;
         row.innerHTML =
           '<td></td>' +
           '<td><div style="display:flex;align-items:center;gap:0.625rem;padding-left:1.75rem;">' +
-          '<div class="checkbox-wrapper"><input type="checkbox" data-food-id="' + food.id + '" ' + (isExcluded ? '' : 'checked') + ' onchange="onFoodExcludeChange(this)"></div>' +
+          '<div class="checkbox-wrapper"><input type="checkbox" data-food-id="' + food.id + '" ' + (foodChecked ? 'checked' : '') + ' onchange="onFoodExcludeChange(this)"></div>' +
           '<span class="food-name-cell">' + escHtml(food.name) + '</span>' +
           '</div></td>' +
           '<td></td>';
