@@ -354,6 +354,10 @@ try {
       process.env.STATION_TICKETS_ENABLED = savedConfig.stationTicketsEnabled ? 'true' : 'false';
       console.log('Loaded stationTicketsEnabled from config.json:', savedConfig.stationTicketsEnabled);
     }
+    if (savedConfig.excludedFoodIds) {
+      process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
+      console.log('Loaded excludedFoodIds from config.json');
+    }
   }
 } catch (e) {
   console.error('Failed to load config.json on startup:', e);
@@ -483,6 +487,7 @@ app.get('/config', (req: Request, res: Response) => {
 interface AppConfig {
   singleTicketCategories: string[];
   stationTicketsEnabled: boolean;
+  excludedFoodIds: string[];
 }
 
 async function readConfig(): Promise<AppConfig> {
@@ -493,13 +498,14 @@ async function readConfig(): Promise<AppConfig> {
     return {
       singleTicketCategories: parsed.singleTicketCategories ?? [],
       stationTicketsEnabled: parsed.stationTicketsEnabled ?? false,
+      excludedFoodIds: parsed.excludedFoodIds ?? [],
     };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error('Failed to read config file:', e);
     }
   }
-  return { singleTicketCategories: [], stationTicketsEnabled: false };
+  return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [] };
 }
 
 async function writeConfig(config: AppConfig): Promise<void> {
@@ -507,7 +513,28 @@ async function writeConfig(config: AppConfig): Promise<void> {
   await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
   process.env.STATION_TICKETS_ENABLED = config.stationTicketsEnabled ? 'true' : 'false';
+  process.env.EXCLUDED_FOOD_IDS = config.excludedFoodIds.join(',');
 }
+
+/**
+ * GET /api/categories/:id/foods - Fetch foods for a category from external API
+ */
+app.get('/api/categories/:id/foods', async (req: Request, res: Response) => {
+  const token = req.cookies?.mystampa_session;
+  if (!token) return res.status(401).json({ error: 'Not authenticated' });
+  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const resp = await axios.get(`${API_URL}/v1/foods`, {
+      timeout: 10000,
+      params: { categoryId: req.params.id },
+      headers: { Accept: 'application/json', Cookie: `mysagra_token=${token}` },
+    });
+    return res.json(resp.data);
+  } catch (err: any) {
+    console.error('Failed to fetch foods for category:', err.message);
+    return res.status(502).json({ error: 'Failed to fetch foods' });
+  }
+});
 
 /**
  * GET /api/categories - Fetch categories from external API
@@ -560,7 +587,7 @@ app.get('/api/config', async (req: Request, res: Response) => {
 app.post('/api/config', async (req: Request, res: Response) => {
   if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories, stationTicketsEnabled } = req.body;
+  const { singleTicketCategories, stationTicketsEnabled, excludedFoodIds } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
@@ -568,6 +595,7 @@ app.post('/api/config', async (req: Request, res: Response) => {
   const config: AppConfig = {
     singleTicketCategories,
     stationTicketsEnabled: stationTicketsEnabled !== undefined ? Boolean(stationTicketsEnabled) : current.stationTicketsEnabled,
+    excludedFoodIds: Array.isArray(excludedFoodIds) ? excludedFoodIds : current.excludedFoodIds,
   };
   try {
     await writeConfig(config);

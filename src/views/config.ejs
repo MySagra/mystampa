@@ -424,6 +424,52 @@
       -webkit-overflow-scrolling: touch;
     }
 
+    /* Expand arrow button */
+    .expand-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      flex-shrink: 0;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+
+    .expand-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .expand-btn svg {
+      width: 16px;
+      height: 16px;
+      transition: transform 0.2s ease;
+    }
+
+    .expand-btn.expanded svg {
+      transform: rotate(90deg);
+    }
+
+    /* Food sub-rows */
+    .food-row td {
+      background: rgba(0, 0, 0, 0.2);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.85rem;
+    }
+
+    .food-row:last-child td {
+      border-bottom: none;
+    }
+
+    .food-name-cell {
+      color: var(--text-muted);
+    }
+
     /* ── Mobile responsive ── */
     @media (max-width: 600px) {
       .header {
@@ -680,8 +726,10 @@
     var categories = [];
     var selectedIds = [];
     var originalIds = [];
-
     var stationTicketsEnabled = false;
+    var excludedFoodIds = [];
+    var foodsCache = {};
+    var expandedCategories = {};
 
     function showToast(msg, type) {
       var t = document.getElementById('toast');
@@ -713,6 +761,7 @@
         selectedIds = config.singleTicketCategories || [];
         originalIds = selectedIds.slice();
         stationTicketsEnabled = !!config.stationTicketsEnabled;
+        excludedFoodIds = config.excludedFoodIds || [];
 
         categories.sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
 
@@ -745,10 +794,15 @@
         var checked = selectedIds.indexOf(cat.id) !== -1 ? 'checked' : '';
         var availClass = cat.available ? 'yes' : 'no';
         var availText = cat.available ? 'Attiva' : 'Disattiva';
+        var expandedClass = expandedCategories[cat.id] ? 'expanded' : '';
 
-        html += '<tr>';
+        html += '<tr data-cat-id="' + cat.id + '">';
         html += '<td><div class="checkbox-wrapper"><input type="checkbox" data-id="' + cat.id + '" ' + checked + ' onchange="onCheckChange()"></div></td>';
-        html += '<td><div class="cat-name">' + escHtml(cat.name) + '</div></td>';
+        html += '<td><div style="display:flex;align-items:center;gap:0.5rem;">';
+        html += '<button class="expand-btn ' + expandedClass + '" data-expand-cat="' + cat.id + '" onclick="toggleExpand(\'' + cat.id + '\')" title="Mostra/nascondi cibi">';
+        html += '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>';
+        html += '</button>';
+        html += '<div class="cat-name">' + escHtml(cat.name) + '</div></div></td>';
         html += '<td style="text-align:center;"><span class="cat-available ' + availClass + '">' + availText + '</span></td>';
         html += '</tr>';
       }
@@ -769,6 +823,85 @@
       stationTicketsEnabled = document.getElementById('stationTicketsToggle').checked;
     }
 
+    function toggleExpand(catId) {
+      if (expandedCategories[catId]) {
+        collapseCategory(catId);
+        expandedCategories[catId] = false;
+      } else {
+        expandedCategories[catId] = true;
+        if (foodsCache[catId]) {
+          expandCategory(catId, foodsCache[catId]);
+        } else {
+          fetchAndExpandCategory(catId);
+        }
+      }
+      var btn = document.querySelector('[data-expand-cat="' + catId + '"]');
+      if (btn) btn.classList.toggle('expanded', !!expandedCategories[catId]);
+    }
+
+    async function fetchAndExpandCategory(catId) {
+      var tbody = document.querySelector('#categoriesContainer table tbody');
+      var catRow = tbody.querySelector('tr[data-cat-id="' + catId + '"]');
+      var loadingRow = document.createElement('tr');
+      loadingRow.className = 'food-row food-row-' + catId;
+      loadingRow.innerHTML = '<td></td><td colspan="2" style="color:var(--text-muted);font-size:0.82rem;padding:0.5rem 0.75rem;">Caricamento cibi...</td>';
+      catRow.after(loadingRow);
+      try {
+        var resp = await fetch('/api/categories/' + catId + '/foods');
+        var foods = await resp.json();
+        foodsCache[catId] = foods;
+        loadingRow.remove();
+        expandCategory(catId, foods);
+      } catch (e) {
+        loadingRow.innerHTML = '<td></td><td colspan="2" style="color:var(--error);font-size:0.82rem;padding:0.5rem 0.75rem;">Errore nel caricamento</td>';
+        console.error(e);
+      }
+    }
+
+    function expandCategory(catId, foods) {
+      collapseCategory(catId);
+      var tbody = document.querySelector('#categoriesContainer table tbody');
+      var catRow = tbody.querySelector('tr[data-cat-id="' + catId + '"]');
+      if (!catRow) return;
+      if (!foods || foods.length === 0) {
+        var row = document.createElement('tr');
+        row.className = 'food-row food-row-' + catId;
+        row.innerHTML = '<td></td><td colspan="2" style="color:var(--text-muted);font-size:0.82rem;padding:0.5rem 0.75rem;">Nessun cibo in questa categoria</td>';
+        catRow.after(row);
+        return;
+      }
+      var insertAfter = catRow;
+      for (var i = 0; i < foods.length; i++) {
+        var food = foods[i];
+        var isExcluded = excludedFoodIds.indexOf(food.id) !== -1;
+        var row = document.createElement('tr');
+        row.className = 'food-row food-row-' + catId;
+        row.innerHTML =
+          '<td></td>' +
+          '<td><div style="display:flex;align-items:center;gap:0.625rem;padding-left:1.75rem;">' +
+          '<div class="checkbox-wrapper"><input type="checkbox" data-food-id="' + food.id + '" ' + (isExcluded ? '' : 'checked') + ' onchange="onFoodExcludeChange(this)"></div>' +
+          '<span class="food-name-cell">' + escHtml(food.name) + '</span>' +
+          '</div></td>' +
+          '<td></td>';
+        insertAfter.after(row);
+        insertAfter = row;
+      }
+    }
+
+    function collapseCategory(catId) {
+      var rows = document.querySelectorAll('.food-row-' + catId);
+      for (var i = 0; i < rows.length; i++) rows[i].remove();
+    }
+
+    function onFoodExcludeChange(checkbox) {
+      var foodId = checkbox.getAttribute('data-food-id');
+      if (!checkbox.checked) {
+        if (excludedFoodIds.indexOf(foodId) === -1) excludedFoodIds.push(foodId);
+      } else {
+        excludedFoodIds = excludedFoodIds.filter(function(id) { return id !== foodId; });
+      }
+    }
+
     async function saveConfig() {
       var btn = document.getElementById('saveBtn');
       btn.disabled = true;
@@ -780,7 +913,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             singleTicketCategories: selectedIds,
-            stationTicketsEnabled: stationTicketsEnabled
+            stationTicketsEnabled: stationTicketsEnabled,
+            excludedFoodIds: excludedFoodIds
           })
         });
 
