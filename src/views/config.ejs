@@ -911,6 +911,36 @@
         if (excludedFoodIds.indexOf(foodId) === -1) excludedFoodIds.push(foodId);
       } else {
         excludedFoodIds = excludedFoodIds.filter(function(id) { return id !== foodId; });
+
+        // Find category from row class
+        var row = checkbox.closest('tr');
+        var catId = null;
+        if (row) {
+          var match = row.className.match(/food-row-([^\s]+)/);
+          if (match) catId = match[1];
+        }
+
+        if (catId) {
+          // Auto-add category to singleTicketCategories
+          if (selectedIds.indexOf(catId) === -1) {
+            selectedIds.push(catId);
+            var catCheckbox = document.querySelector('#categoriesContainer input[data-id="' + catId + '"]');
+            if (catCheckbox) catCheckbox.checked = true;
+          }
+
+          // Exclude all other foods in this category
+          if (foodsCache[catId]) {
+            foodsCache[catId].forEach(function(f) {
+              if (f.id !== foodId && excludedFoodIds.indexOf(f.id) === -1) {
+                excludedFoodIds.push(f.id);
+              }
+            });
+            var siblingCheckboxes = document.querySelectorAll('.food-row-' + catId + ' input[data-food-id]');
+            siblingCheckboxes.forEach(function(cb) {
+              if (cb.getAttribute('data-food-id') !== foodId) cb.checked = false;
+            });
+          }
+        }
       }
     }
 
