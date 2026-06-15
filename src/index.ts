@@ -354,6 +354,10 @@ try {
       process.env.STATION_TICKETS_ENABLED = savedConfig.stationTicketsEnabled ? 'true' : 'false';
       console.log('Loaded stationTicketsEnabled from config.json:', savedConfig.stationTicketsEnabled);
     }
+    if (savedConfig.excludedFoodIds) {
+      process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
+      console.log('Loaded excludedFoodIds from config.json');
+    }
   }
 } catch (e) {
   console.error('Failed to load config.json on startup:', e);
@@ -427,12 +431,13 @@ app.post('/login', async (req: Request, res: Response) => {
 
     const setCookieHeader = resp.headers['set-cookie'];
     let tokenValue: string | undefined;
+    let sessionCookieStr: string | undefined;
     if (setCookieHeader) {
       const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
       for (const c of cookieHeaders) {
-        // Match the token name allowing optional spaces around = and before ;
-        const match = c.match(/(?:^|;)\s*mysagra_token\s*=\s*([^;]*)/);
-        if (match) { tokenValue = match[1].trim(); break; }
+        // Match the session cookie name allowing optional spaces around = and before ;
+        const match = c.match(/(?:^|;)\s*mysagra_session\s*=\s*([^;]*)/);
+        if (match) { tokenValue = match[1].trim(); sessionCookieStr = c; break; }
       }
     }
 
@@ -445,11 +450,27 @@ app.post('/login', async (req: Request, res: Response) => {
       return res.render('login', { error: 'Accesso negato: ruolo non autorizzato' });
     }
 
+    // Derive cookie lifetime from upstream Max-Age / Expires, fallback 6h
+    const DEFAULT_MAX_AGE = 6 * 60 * 60 * 1000;
+    let maxAge = DEFAULT_MAX_AGE;
+    if (sessionCookieStr) {
+      const maxAgeMatch = sessionCookieStr.match(/(?:^|;)\s*Max-Age\s*=\s*(\d+)/i);
+      const expiresMatch = sessionCookieStr.match(/(?:^|;)\s*Expires\s*=\s*([^;]+)/i);
+      if (maxAgeMatch) {
+        maxAge = parseInt(maxAgeMatch[1], 10) * 1000;
+      } else if (expiresMatch) {
+        const expMs = Date.parse(expiresMatch[1].trim());
+        if (!isNaN(expMs) && expMs > Date.now()) {
+          maxAge = expMs - Date.now();
+        }
+      }
+    }
+
     const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax' as const,
-      maxAge: 6 * 60 * 60 * 1000,
+      maxAge,
     };
     res.cookie('mystampa_session', tokenValue, cookieOptions);
     res.cookie('mystampa_role', role, cookieOptions);
@@ -483,6 +504,7 @@ app.get('/config', (req: Request, res: Response) => {
 interface AppConfig {
   singleTicketCategories: string[];
   stationTicketsEnabled: boolean;
+  excludedFoodIds: string[];
 }
 
 async function readConfig(): Promise<AppConfig> {
@@ -493,13 +515,14 @@ async function readConfig(): Promise<AppConfig> {
     return {
       singleTicketCategories: parsed.singleTicketCategories ?? [],
       stationTicketsEnabled: parsed.stationTicketsEnabled ?? false,
+      excludedFoodIds: parsed.excludedFoodIds ?? [],
     };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error('Failed to read config file:', e);
     }
   }
-  return { singleTicketCategories: [], stationTicketsEnabled: false };
+  return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [] };
 }
 
 async function writeConfig(config: AppConfig): Promise<void> {
@@ -507,19 +530,24 @@ async function writeConfig(config: AppConfig): Promise<void> {
   await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
   process.env.STATION_TICKETS_ENABLED = config.stationTicketsEnabled ? 'true' : 'false';
+  process.env.EXCLUDED_FOOD_IDS = config.excludedFoodIds.join(',');
 }
 
 /**
- * GET /api/categories - Fetch categories from external API
+ * GET /api/categories - Fetch categories from external API.
+ * Supports ?include=foods to get categories with their foods embedded.
  */
 app.get('/api/categories', async (req: Request, res: Response) => {
   const token = req.cookies?.mystampa_session;
   if (!token) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
   try {
+    const params: Record<string, string> = {};
+    if (req.query.include) params.include = String(req.query.include);
     const resp = await axios.get(`${API_URL}/v1/categories`, {
       timeout: 10000,
-      headers: { Accept: 'application/json', Cookie: `mysagra_token=${token}` },
+      params,
+      headers: { Accept: 'application/json', Cookie: `mysagra_session=${token}` },
     });
     return res.json(resp.data);
   } catch (err: any) {
@@ -560,7 +588,7 @@ app.get('/api/config', async (req: Request, res: Response) => {
 app.post('/api/config', async (req: Request, res: Response) => {
   if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories, stationTicketsEnabled } = req.body;
+  const { singleTicketCategories, stationTicketsEnabled, excludedFoodIds } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
@@ -568,6 +596,7 @@ app.post('/api/config', async (req: Request, res: Response) => {
   const config: AppConfig = {
     singleTicketCategories,
     stationTicketsEnabled: stationTicketsEnabled !== undefined ? Boolean(stationTicketsEnabled) : current.stationTicketsEnabled,
+    excludedFoodIds: Array.isArray(excludedFoodIds) ? excludedFoodIds : current.excludedFoodIds,
   };
   try {
     await writeConfig(config);

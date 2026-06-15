@@ -424,6 +424,51 @@
       -webkit-overflow-scrolling: touch;
     }
 
+    /* Expand arrow button */
+    .expand-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      flex-shrink: 0;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+
+    .expand-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .expand-btn svg {
+      width: 16px;
+      height: 16px;
+      transition: transform 0.2s ease;
+    }
+
+    .expand-btn.expanded svg {
+      transform: rotate(90deg);
+    }
+
+    /* Food sub-rows */
+    .food-row td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 0.5rem 0.75rem;
+      font-size: 0.85rem;
+    }
+
+    .food-row:last-child td {
+      border-bottom: none;
+    }
+
+    .food-name-cell {
+      color: var(--text-muted);
+    }
+
     /* ── Mobile responsive ── */
     @media (max-width: 600px) {
       .header {
@@ -680,8 +725,10 @@
     var categories = [];
     var selectedIds = [];
     var originalIds = [];
-
     var stationTicketsEnabled = false;
+    var excludedFoodIds = [];
+    var foodsCache = {};
+    var expandedCategories = {};
 
     function showToast(msg, type) {
       var t = document.getElementById('toast');
@@ -699,7 +746,7 @@
     async function loadData() {
       try {
         var [catResp, configResp] = await Promise.all([
-          fetch('/api/categories'),
+          fetch('/api/categories?include=foods'),
           fetch('/api/config')
         ]);
 
@@ -708,11 +755,19 @@
           return;
         }
 
-        categories = await catResp.json();
+        var catData = await catResp.json();
         var config = await configResp.json();
+
+        categories = catData;
+        foodsCache = {};
+        for (var ci = 0; ci < categories.length; ci++) {
+          var c = categories[ci];
+          if (Array.isArray(c.foods)) foodsCache[c.id] = c.foods;
+        }
         selectedIds = config.singleTicketCategories || [];
         originalIds = selectedIds.slice();
         stationTicketsEnabled = !!config.stationTicketsEnabled;
+        excludedFoodIds = config.excludedFoodIds || [];
 
         categories.sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
 
@@ -745,10 +800,15 @@
         var checked = selectedIds.indexOf(cat.id) !== -1 ? 'checked' : '';
         var availClass = cat.available ? 'yes' : 'no';
         var availText = cat.available ? 'Attiva' : 'Disattiva';
+        var expandedClass = expandedCategories[cat.id] ? 'expanded' : '';
 
-        html += '<tr>';
+        html += '<tr data-cat-id="' + cat.id + '">';
         html += '<td><div class="checkbox-wrapper"><input type="checkbox" data-id="' + cat.id + '" ' + checked + ' onchange="onCheckChange()"></div></td>';
-        html += '<td><div class="cat-name">' + escHtml(cat.name) + '</div></td>';
+        html += '<td><div style="display:flex;align-items:center;gap:0.5rem;">';
+        html += '<button class="expand-btn ' + expandedClass + '" data-expand-cat="' + cat.id + '" onclick="toggleExpand(\'' + cat.id + '\')" title="Mostra/nascondi cibi">';
+        html += '<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7"/></svg>';
+        html += '</button>';
+        html += '<div class="cat-name">' + escHtml(cat.name) + '</div></div></td>';
         html += '<td style="text-align:center;"><span class="cat-available ' + availClass + '">' + availText + '</span></td>';
         html += '</tr>';
       }
@@ -758,15 +818,155 @@
     }
 
     function onCheckChange() {
-      var checkboxes = document.querySelectorAll('#categoriesContainer input[type="checkbox"]');
-      selectedIds = [];
+      var checkboxes = document.querySelectorAll('#categoriesContainer input[data-id]');
+      var newSelectedIds = [];
       for (var i = 0; i < checkboxes.length; i++) {
-        if (checkboxes[i].checked) selectedIds.push(checkboxes[i].getAttribute('data-id'));
+        if (checkboxes[i].checked) newSelectedIds.push(checkboxes[i].getAttribute('data-id'));
       }
+
+      for (var j = 0; j < newSelectedIds.length; j++) {
+        var catId = newSelectedIds[j];
+        if (selectedIds.indexOf(catId) === -1) {
+          // Newly checked → clear all exclusions for this category's foods
+          if (foodsCache[catId]) {
+            var foodIds = foodsCache[catId].map(function(f) { return f.id; });
+            excludedFoodIds = excludedFoodIds.filter(function(id) { return foodIds.indexOf(id) === -1; });
+          }
+          syncFoodCheckboxes(catId, true);
+        }
+      }
+
+      for (var k = 0; k < selectedIds.length; k++) {
+        var uncatId = selectedIds[k];
+        if (newSelectedIds.indexOf(uncatId) === -1) {
+          // Newly unchecked → uncheck all food rows visually
+          syncFoodCheckboxes(uncatId, false);
+        }
+      }
+
+      selectedIds = newSelectedIds;
+    }
+
+    function syncFoodCheckboxes(catId, checked) {
+      var rows = document.querySelectorAll('.food-row-' + catId + ' input[data-food-id]');
+      for (var i = 0; i < rows.length; i++) rows[i].checked = checked;
     }
 
     function onStationToggleChange() {
       stationTicketsEnabled = document.getElementById('stationTicketsToggle').checked;
+    }
+
+    function toggleExpand(catId) {
+      if (expandedCategories[catId]) {
+        collapseCategory(catId);
+        expandedCategories[catId] = false;
+      } else {
+        expandedCategories[catId] = true;
+        expandCategory(catId, foodsCache[catId] || []);
+      }
+      var btn = document.querySelector('[data-expand-cat="' + catId + '"]');
+      if (btn) btn.classList.toggle('expanded', !!expandedCategories[catId]);
+    }
+
+    function expandCategory(catId, foods) {
+      collapseCategory(catId);
+      var tbody = document.querySelector('#categoriesContainer table tbody');
+      var catRow = tbody.querySelector('tr[data-cat-id="' + catId + '"]');
+      if (!catRow) return;
+      if (!foods || foods.length === 0) {
+        var row = document.createElement('tr');
+        row.className = 'food-row food-row-' + catId;
+        row.innerHTML = '<td></td><td colspan="2" style="color:var(--text-muted);font-size:0.82rem;padding:0.5rem 0.75rem;">Nessun cibo in questa categoria</td>';
+        catRow.after(row);
+        return;
+      }
+      var catSelected = selectedIds.indexOf(catId) !== -1;
+      var insertAfter = catRow;
+      for (var i = 0; i < foods.length; i++) {
+        var food = foods[i];
+        var isExcluded = excludedFoodIds.indexOf(food.id) !== -1;
+        var foodChecked = catSelected && !isExcluded;
+        var row = document.createElement('tr');
+        row.className = 'food-row food-row-' + catId;
+        row.innerHTML =
+          '<td></td>' +
+          '<td><div style="display:flex;align-items:center;gap:0.625rem;padding-left:1.75rem;">' +
+          '<div class="checkbox-wrapper"><input type="checkbox" data-food-id="' + food.id + '" ' + (foodChecked ? 'checked' : '') + ' onchange="onFoodExcludeChange(this)"></div>' +
+          '<span class="food-name-cell">' + escHtml(food.name) + '</span>' +
+          '</div></td>' +
+          '<td></td>';
+        insertAfter.after(row);
+        insertAfter = row;
+      }
+    }
+
+    function collapseCategory(catId) {
+      var rows = document.querySelectorAll('.food-row-' + catId);
+      for (var i = 0; i < rows.length; i++) rows[i].remove();
+    }
+
+    function onFoodExcludeChange(checkbox) {
+      var foodId = checkbox.getAttribute('data-food-id');
+      if (!checkbox.checked) {
+        if (excludedFoodIds.indexOf(foodId) === -1) excludedFoodIds.push(foodId);
+
+        // Find category from row class
+        var rowUn = checkbox.closest('tr');
+        var catIdUn = null;
+        if (rowUn) {
+          var matchUn = rowUn.className.match(/food-row-([^\s]+)/);
+          if (matchUn) catIdUn = matchUn[1];
+        }
+
+        // If all foods in category now excluded → deactivate category
+        if (catIdUn && foodsCache[catIdUn]) {
+          var allExcluded = foodsCache[catIdUn].every(function(f) {
+            return excludedFoodIds.indexOf(f.id) !== -1;
+          });
+          if (allExcluded) {
+            selectedIds = selectedIds.filter(function(id) { return id !== catIdUn; });
+            var catFoodIds = foodsCache[catIdUn].map(function(f) { return f.id; });
+            excludedFoodIds = excludedFoodIds.filter(function(id) { return catFoodIds.indexOf(id) === -1; });
+            var catCbUn = document.querySelector('#categoriesContainer input[data-id="' + catIdUn + '"]');
+            if (catCbUn) catCbUn.checked = false;
+          }
+        }
+      } else {
+        excludedFoodIds = excludedFoodIds.filter(function(id) { return id !== foodId; });
+
+        // Find category from row class
+        var row = checkbox.closest('tr');
+        var catId = null;
+        if (row) {
+          var match = row.className.match(/food-row-([^\s]+)/);
+          if (match) catId = match[1];
+        }
+
+        if (catId) {
+          var catAlreadyActive = selectedIds.indexOf(catId) !== -1;
+
+          // Auto-add category to singleTicketCategories
+          if (!catAlreadyActive) {
+            selectedIds.push(catId);
+            var catCheckbox = document.querySelector('#categoriesContainer input[data-id="' + catId + '"]');
+            if (catCheckbox) catCheckbox.checked = true;
+
+            // First food checked → exclude all others (auto-setup)
+            if (foodsCache[catId]) {
+              foodsCache[catId].forEach(function(f) {
+                if (f.id !== foodId && excludedFoodIds.indexOf(f.id) === -1) {
+                  excludedFoodIds.push(f.id);
+                }
+              });
+              var siblingCheckboxes = document.querySelectorAll('.food-row-' + catId + ' input[data-food-id]');
+              siblingCheckboxes.forEach(function(cb) {
+                if (cb.getAttribute('data-food-id') !== foodId) cb.checked = false;
+              });
+            }
+          }
+          // Category already active → just remove food from exclusions (already done above)
+        }
+      }
     }
 
     async function saveConfig() {
@@ -780,7 +980,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             singleTicketCategories: selectedIds,
-            stationTicketsEnabled: stationTicketsEnabled
+            stationTicketsEnabled: stationTicketsEnabled,
+            excludedFoodIds: excludedFoodIds
           })
         });
 

@@ -181,6 +181,11 @@ export async function handlePrintOrder(
     ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
     : [];
 
+  const excludedFoodIdsEnv = process.env.EXCLUDED_FOOD_IDS;
+  const excludedFoodIds = excludedFoodIdsEnv
+    ? excludedFoodIdsEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
+    : [];
+
   const stationTicketsEnabled = process.env.STATION_TICKETS_ENABLED === 'true';
 
   // Determine which items go to kitchen printers.
@@ -253,7 +258,8 @@ export async function handlePrintOrder(
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
 
     const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
-    if (categoryId && targetCategoryIds.includes(String(categoryId))) {
+    if (categoryId && targetCategoryIds.includes(String(categoryId)) &&
+        !(fId && excludedFoodIds.includes(String(fId)))) {
       singleTickets.push({ foodName, quantity: qty, notes });
     }
   }
