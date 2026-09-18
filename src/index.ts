@@ -42,13 +42,85 @@ let printers: Printer[] = [];
  * events by calling handlePrintOrder directly. This allows the service
  * to process orders pushed by a backend without requiring HTTP calls.
  */
+/**
+ * Handle a single fully-parsed SSE event. Never throws: the SSE loop must
+ * keep running whatever happens while printing.
+ */
+async function dispatchSSEEvent(eventType: string, eventData: string): Promise<void> {
+  let payload: any;
+  try {
+    payload = JSON.parse(eventData);
+  } catch (err) {
+    console.error(`SSE: invalid JSON payload (type=${eventType}, ${eventData.length} bytes)`, err);
+    return;
+  }
+
+  try {
+    console.log(`SSE received event (type=${eventType}):`, payload);
+
+    if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
+      const order = payload.createdOrder ?? payload;
+      if (eventType === 'confirmed-order' && String(order.paymentMethod ?? '').toUpperCase() === 'CASH' && order.cashRegisterId) {
+        handleOpenDrawerByCashRegister(String(order.cashRegisterId), printers)
+          .then((r) => {
+            if (r.ok) console.log('SSE: cash drawer opened for confirmed-order');
+            else console.error('SSE: cash drawer open failed:', r.error);
+          })
+          .catch((e) => console.error('SSE: cash drawer open error:', e));
+      }
+      const result = await handlePrintOrder(order, printers);
+      if (result.ok) {
+        console.log('SSE: print order handled successfully', result);
+      } else {
+        console.error('SSE: print order failed:', result.error);
+      }
+    } else if (eventType === 'order-cancelled') {
+      const result = await handleOrderCancelled(payload, printers);
+      if (result.ok) {
+        console.log('SSE: order cancellation handled successfully', result);
+      } else {
+        console.error('SSE: order cancellation failed:', result.error);
+      }
+    } else if (eventType === 'general-closure') {
+      const result = await handleGeneralClosure(payload, printers);
+      if (result.ok) {
+        console.log('SSE: general closure handled successfully', result);
+      } else {
+        console.error('SSE: general closure failed:', result.error);
+      }
+    } else if (eventType === 'open-drawer') {
+      const result = await handleOpenDrawer(payload, printers);
+      if (result.ok) {
+        console.log('SSE: cash drawer opened successfully');
+      } else {
+        console.error('SSE: cash drawer open failed:', result.error);
+      }
+    } else {
+      console.log(`SSE: ignoring event type '${eventType}'`);
+    }
+  } catch (err) {
+    console.error('SSE: failed to handle event', err);
+  }
+}
+
 async function startSSE(): Promise<void> {
   const url = `${API_URL}/events/printer`;
   const BASE_DELAY_MS = 5_000;
   const MAX_DELAY_MS = 120_000;
   const CONNECT_TIMEOUT_MS = 30_000;
+  // No byte at all (not even a keep-alive comment) for this long means the
+  // stream is dead even if the socket still looks open (proxy silently dropped it).
+  const IDLE_TIMEOUT_MS = 90_000;
   const MAX_BUFFER_SIZE = 1024 * 1024; // 1 MB guard against malformed/huge events
   let attempt = 0;
+
+  // Events are handled on a serial chain instead of inline, so a slow print
+  // never blocks reading the socket (which would stall the stream upstream).
+  let dispatchChain: Promise<void> = Promise.resolve();
+
+  // Last id seen, replayed on reconnect so events sent while we were down
+  // are not lost (requires Last-Event-ID support on the backend).
+  let lastEventId = '';
 
   // Infinite retry loop with exponential backoff — never gives up
   while (true) {
@@ -64,12 +136,24 @@ async function startSSE(): Promise<void> {
     const controller = new AbortController();
     // Abort if the server accepts the TCP connection but never sends HTTP headers
     const connectTimeout = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
+    let idleTimer: NodeJS.Timeout | null = null;
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        console.error(`SSE: no data for ${IDLE_TIMEOUT_MS / 1000}s, dropping stale connection`);
+        controller.abort();
+      }, IDLE_TIMEOUT_MS);
+    };
 
     try {
       const response = await fetch(url, {
         signal: controller.signal,
         headers: {
           Accept: 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          // Ask the proxy not to compress: compression buffers the stream
+          'Accept-Encoding': 'identity',
+          ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
           'X-API-KEY': API_KEY,
         },
       });
@@ -83,82 +167,55 @@ async function startSSE(): Promise<void> {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        // Parser state belongs to the whole connection, not to one chunk: a
+        // single event can be split across any number of chunks, and a proxy
+        // (Cloudflare) re-chunks the stream however it likes.
         let buffer = '';
+        let eventType = '';
+        let eventData = '';
+
+        armIdleTimer();
 
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
+            armIdleTimer();
             buffer += decoder.decode(value, { stream: true });
 
             // Guard against unbounded buffer growth from malformed events
             if (buffer.length > MAX_BUFFER_SIZE) {
               console.error('SSE: buffer exceeded limit (malformed event?), resetting connection');
+              controller.abort();
               break;
             }
 
-            const lines = buffer.split('\n');
-            buffer = lines.pop() ?? '';
-
-            let eventType = '';
-            let eventData = '';
+            // SSE accepts \n, \r\n and \r as line terminators.
+            // A trailing CR may be the first half of a CRLF split across two
+            // chunks: keep it buffered until the next chunk resolves it,
+            // otherwise it reads as an empty line and wipes the pending event.
+            const danglingCR = buffer.endsWith('\r') ? '\r' : '';
+            const scannable = danglingCR ? buffer.slice(0, -1) : buffer;
+            const lines = scannable.split(/\r\n|\r|\n/);
+            buffer = (lines.pop() ?? '') + danglingCR; // trailing partial line stays buffered
 
             for (const line of lines) {
-              if (line.startsWith('event:')) {
+              if (line.startsWith(':')) {
+                continue; // comment / keep-alive
+              } else if (line.startsWith('event:')) {
                 eventType = line.slice(6).trim();
+              } else if (line.startsWith('id:')) {
+                const id = line.slice(3).trim();
+                if (id) lastEventId = id;
               } else if (line.startsWith('data:')) {
                 const chunk = line.slice(5).trim();
                 eventData = eventData ? eventData + '\n' + chunk : chunk;
               } else if (line === '') {
                 if (eventData) {
-                  try {
-                    const payload = JSON.parse(eventData);
-                    console.log(`SSE received event (type=${eventType}):`, payload);
-
-                    if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
-                      const order = payload.createdOrder ?? payload;
-                      if (eventType === 'confirmed-order' && String(order.paymentMethod ?? '').toUpperCase() === 'CASH' && order.cashRegisterId) {
-                        handleOpenDrawerByCashRegister(String(order.cashRegisterId), printers)
-                          .then((r) => {
-                            if (r.ok) console.log('SSE: cash drawer opened for confirmed-order');
-                            else console.error('SSE: cash drawer open failed:', r.error);
-                          })
-                          .catch((e) => console.error('SSE: cash drawer open error:', e));
-                      }
-                      const result = await handlePrintOrder(order, printers);
-                      if (result.ok) {
-                        console.log('SSE: print order handled successfully', result);
-                      } else {
-                        console.error('SSE: print order failed:', result.error);
-                      }
-                    } else if (eventType === 'order-cancelled') {
-                      const result = await handleOrderCancelled(payload, printers);
-                      if (result.ok) {
-                        console.log('SSE: order cancellation handled successfully', result);
-                      } else {
-                        console.error('SSE: order cancellation failed:', result.error);
-                      }
-                    } else if (eventType === 'general-closure') {
-                      const result = await handleGeneralClosure(payload, printers);
-                      if (result.ok) {
-                        console.log('SSE: general closure handled successfully', result);
-                      } else {
-                        console.error('SSE: general closure failed:', result.error);
-                      }
-                    } else if (eventType === 'open-drawer') {
-                      const result = await handleOpenDrawer(payload, printers);
-                      if (result.ok) {
-                        console.log('SSE: cash drawer opened successfully');
-                      } else {
-                        console.error('SSE: cash drawer open failed:', result.error);
-                      }
-                    } else {
-                      console.log(`SSE: ignoring event type '${eventType}'`);
-                    }
-                  } catch (err) {
-                    console.error('SSE: failed to handle event', err);
-                  }
+                  const type = eventType;
+                  const data = eventData;
+                  dispatchChain = dispatchChain.then(() => dispatchSSEEvent(type, data));
                 }
                 eventType = '';
                 eventData = '';
@@ -166,6 +223,7 @@ async function startSSE(): Promise<void> {
             }
           }
         } finally {
+          if (idleTimer) clearTimeout(idleTimer);
           // Always release the reader to avoid resource leaks
           reader.cancel().catch(() => {});
         }
@@ -175,6 +233,8 @@ async function startSSE(): Promise<void> {
     } catch (err) {
       clearTimeout(connectTimeout);
       console.error('SSE: connection error:', err);
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
     }
   }
 }
