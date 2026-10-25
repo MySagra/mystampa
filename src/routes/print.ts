@@ -4,22 +4,19 @@
  * This module exports a standalone function `handlePrintOrder` that
  * contains the business logic for processing incoming orders.
  * Food details (name, kitchen printer, category, station) come
- * embedded in the SSE event. It looks up the cash register printer,
- * aggregates items per printer and generates separate receipts for
- * kitchen and cash printers.
+ * embedded in the SSE event. It looks up the cash register printer
+ * in the cash registers cache, aggregates items per printer and
+ * generates separate receipts for kitchen and cash printers.
  */
 
-import axiosInstance from "../utils/axiosInstance";
 import {
   IncomingOrder,
-  CashRegisterFromApi,
   Printer,
   IdLike,
 } from "../models";
 
-const API_URL: string = process.env.API_URL || "http://localhost:4300";
-const apiKey: string = process.env.API_KEY || "";
 import { printQueue } from "../utils/printQueue";
+import { resolveCashRegisterPrinter } from "../utils/cashRegistersCache";
 import {
   buildKitchenReceipt,
   buildCashReceipt,
@@ -257,64 +254,20 @@ export async function handlePrintOrder(
     }
   }
 
-  // Resolve the cash register printer. First fetch the cash register from the API
-  let cashRegisterPrinterId = "";
-  let cashRegisterPrinterEmbedded: {
-    id: string;
-    ip?: string | null;
-    port?: any;
-    mac?: string | null;
-  } | null = null;
-  if (order.cashRegisterId !== null && order.cashRegisterId !== undefined) {
-    const crId = trimStr(order.cashRegisterId);
-    try {
-      const r = await axiosInstance.get<CashRegisterFromApi>(
-        `${API_URL}/v1/cash-registers/${crId}?include=printer`,
-        {
-          headers: {
-            Accept: "application/json",
-            'X-API-KEY': apiKey,
-          },
-        },
-      );
-
-      cashRegisterPrinterId =
-        trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
-      cashRegisterPrinterEmbedded = r.data.defaultPrinter
-        ? {
-          id: r.data.defaultPrinter.id,
-          ip: r.data.defaultPrinter.ip,
-          port: r.data.defaultPrinter.port,
-          mac: r.data.defaultPrinter.mac ?? null,
-        }
-        : null;
-    } catch (e) {
-      console.error("cash-register fetch failed", crId, e);
-    }
-  }
+  // Resolve the cash register printer from the cash registers cache
+  const cashPrinter = order.cashRegisterId !== null && order.cashRegisterId !== undefined
+    ? await resolveCashRegisterPrinter(trimStr(order.cashRegisterId), printers)
+    : null;
 
   /**
-   * Resolve a printer by ID. If the cash register response included
-   * embedded printer details (ip/port) for this printerId, those
-   * values are preferred. Otherwise we fall back to the cached
-   * printers list loaded during initialization.
+   * Resolve a kitchen printer by ID from the cached printers list
+   * loaded during initialization.
    */
   function resolvePrinter(
     printerId: string,
   ): { id: string; ip: string; port: number; mac: string | null } | null {
     const pid = trimStr(printerId);
     if (!pid) return null;
-    // If the embedded printer is available and matches this id, use it
-    if (
-      cashRegisterPrinterEmbedded &&
-      trimStr(cashRegisterPrinterEmbedded.id) === pid
-    ) {
-      const ip = trimStr(cashRegisterPrinterEmbedded.ip);
-      const port = parsePort(cashRegisterPrinterEmbedded.port);
-      const mac = cashRegisterPrinterEmbedded.mac ? String(cashRegisterPrinterEmbedded.mac).trim() : null;
-      if ((ip || mac) && port > 0) return { id: pid, ip, port, mac };
-    }
-    // Fallback to cached printers
     const p = printers.find((x) => trimStr(x.id) === pid);
     if (!p) return null;
     return {
@@ -345,17 +298,11 @@ export async function handlePrintOrder(
   // When reprintReceipt is explicitly false the fiscal receipt is skipped.
   if (order.reprintReceipt === false) {
     console.log("[Print] reprintReceipt=false, skipping cash receipt");
-  } else if (cashRegisterPrinterId) {
-    const pr = resolvePrinter(cashRegisterPrinterId);
+  } else if (cashPrinter) {
     const receipt = await buildCashReceipt(order, cashLines, singleTickets, stationTickets);
-    if (pr) {
-      printJobs.push(safePrint(cashRegisterPrinterId, pr.ip, pr.port, receipt, pr.mac, printers));
-    } else {
-      console.log("NO PRINTER for cash printerId=", cashRegisterPrinterId);
-      console.log(receipt);
-    }
+    printJobs.push(safePrint(trimStr(cashPrinter.id), cashPrinter.ip, cashPrinter.port, receipt, cashPrinter.mac, printers));
   } else {
-    console.log("NO cashRegister printerId found, skipping cash receipt");
+    console.log("NO printer found for cashRegisterId=", order.cashRegisterId, ", skipping cash receipt");
   }
 
   const settled = await Promise.allSettled(printJobs);
@@ -368,7 +315,7 @@ export async function handlePrintOrder(
   return {
     ok: true,
     kitchenPrinters: Array.from(kitchenByPrinterId.keys()),
-    cashPrinterId: cashRegisterPrinterId,
+    cashPrinterId: cashPrinter ? trimStr(cashPrinter.id) : "",
   };
 }
 
@@ -443,45 +390,14 @@ export async function handleOpenDrawerByCashRegister(
   const crId = trimStr(cashRegisterId);
   if (!crId) return { ok: false, error: 'Missing cashRegisterId' };
 
-  let printerId = '';
-  let embeddedIp: string | null = null;
-  let embeddedPort: number = 0;
-  let embeddedMac: string | null = null;
+  const printer = await resolveCashRegisterPrinter(crId, printers);
+  if (!printer) return { ok: false, error: `No printer for cash-register ${crId}` };
+
+  const effectiveIp = resolveEffectiveIp(printer.ip, printer.mac);
+  if (!effectiveIp) return { ok: false, error: `No address for printer ${printer.id}` };
 
   try {
-    const r = await axiosInstance.get<CashRegisterFromApi>(
-      `${API_URL}/v1/cash-registers/${crId}?include=printer`,
-      { headers: { Accept: 'application/json', 'X-API-KEY': apiKey } }
-    );
-    printerId = trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
-    if (r.data.defaultPrinter) {
-      embeddedIp = r.data.defaultPrinter.ip ? trimStr(r.data.defaultPrinter.ip) : null;
-      embeddedPort = parsePort(r.data.defaultPrinter.port);
-      embeddedMac = r.data.defaultPrinter.mac ? trimStr(r.data.defaultPrinter.mac) : null;
-    }
-  } catch (e) {
-    return { ok: false, error: `cash-register fetch failed: ${crId}` };
-  }
-
-  if (!printerId) return { ok: false, error: `No printer for cash-register ${crId}` };
-
-  let ip = embeddedIp || '';
-  let port = embeddedPort;
-  let mac = embeddedMac;
-
-  if (!ip || port <= 0) {
-    const cached = printers.find((p) => trimStr(p.id) === printerId);
-    if (!cached) return { ok: false, error: `Printer not found: ${printerId}` };
-    ip = trimStr(cached.ip);
-    port = parsePort(cached.port);
-    mac = cached.mac ? trimStr(cached.mac) : null;
-  }
-
-  const effectiveIp = resolveEffectiveIp(ip, mac);
-  if (!effectiveIp) return { ok: false, error: `No address for printer ${printerId}` };
-
-  try {
-    await openCashDrawer(effectiveIp, port);
+    await openCashDrawer(effectiveIp, parsePort(printer.port));
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? String(err) };

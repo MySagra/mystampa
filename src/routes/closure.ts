@@ -7,27 +7,15 @@
  * and prints a comprehensive report with general statistics and category breakdowns.
  */
 
-import axiosInstance from "../utils/axiosInstance";
-import { CashRegisterFromApi, Printer } from "../models";
+import { Printer } from "../models";
 import { buildGeneralClosureReport, sendToPrinter, getPrinterStatus } from "../utils/printer";
 import { printQueue } from "../utils/printQueue";
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
 import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
-
-const API_URL: string = process.env.API_URL || "http://localhost:4300";
-const API_KEY: string = process.env.API_KEY || "";
+import { resolveCashRegisterPrinter } from "../utils/cashRegistersCache";
 
 function trimStr(v: any): string {
   return v === null || v === undefined ? '' : String(v).trim();
-}
-
-function parsePort(v: any): number {
-  if (v === null || v === undefined) return 0;
-  if (typeof v === 'string') {
-    const cleaned = v.trim().replace(/\./g, '');
-    return parseInt(cleaned, 10) || 0;
-  }
-  return Number(v) || 0;
 }
 
 /**
@@ -112,7 +100,7 @@ async function safePrint(
  * - report: complete closure report with statistics
  * 
  * This function:
- * 1. Fetches the cash register printer details from the API
+ * 1. Resolves the cash register printer from the cash registers cache
  * 2. Builds a main report with general statistics and cash register stats
  * 3. Builds separate tickets for each category
  * 4. Prints all receipts to the cash register printer
@@ -129,55 +117,15 @@ export async function handleGeneralClosure(
 
     console.log(`[Closure] Processing general-closure for cash register: ${cashRegisterId}`);
 
-    // Fetch cash register details with printer information
-    let cashRegisterPrinterId = "";
-    let printerIp = "";
-    let printerPort = 0;
-    let printerMac: string | null = null;
-
-    try {
-      const r = await axiosInstance.get<CashRegisterFromApi>(
-        `${API_URL}/v1/cash-registers/${cashRegisterId}?include=printer`,
-        {
-          headers: {
-            Accept: "application/json",
-            "X-API-KEY": API_KEY,
-          },
-        }
-      );
-
-      cashRegisterPrinterId =
-        trimStr(r.data.defaultPrinterId) || trimStr(r.data.defaultPrinter?.id);
-
-      if (r.data.defaultPrinter) {
-        printerIp = trimStr(r.data.defaultPrinter.ip);
-        printerPort = parsePort(r.data.defaultPrinter.port);
-      }
-
-      // If embedded printer didn't have full details, try to find in cached printers
-      if (!printerIp || !printerPort) {
-        const cached = printers.find(p => trimStr(p.id) === cashRegisterPrinterId);
-        if (cached) {
-          printerIp = printerIp || trimStr(cached.ip);
-          printerPort = printerPort || cached.port;
-          printerMac = cached.mac;
-        }
-      } else {
-        // Check if cached printer has MAC address
-        const cached = printers.find(p => trimStr(p.id) === cashRegisterPrinterId);
-        if (cached && cached.mac) {
-          printerMac = cached.mac;
-        }
-      }
-    } catch (e) {
-      console.error("[Closure] Failed to fetch cash register details:", e);
-      return { ok: false, error: "Failed to fetch cash register printer details" };
-    }
-
-    if (!cashRegisterPrinterId || !printerIp || !printerPort) {
+    const printer = await resolveCashRegisterPrinter(cashRegisterId, printers);
+    if (!printer || !printer.ip || !printer.port) {
       console.error("[Closure] No printer found for cash register:", cashRegisterId);
       return { ok: false, error: "No printer configured for this cash register" };
     }
+    const cashRegisterPrinterId = trimStr(printer.id);
+    const printerIp = printer.ip;
+    const printerPort = printer.port;
+    const printerMac = printer.mac;
 
     console.log(`[Closure] Using printer ${cashRegisterPrinterId} at ${printerIp}:${printerPort}`);
 

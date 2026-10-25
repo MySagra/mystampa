@@ -20,6 +20,7 @@ import { handlePrintOrder, handleOrderCancelled, handleOpenDrawer, handleOpenDra
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
+import { fetchAndCacheCashRegisters } from './utils/cashRegistersCache';
 
 if (!process.env.API_KEY) {
   console.error('[Config] FATAL: API_KEY env var not set. Set it in .env or environment and restart.');
@@ -265,6 +266,11 @@ async function initialize(): Promise<void> {
   printers = await fetchPrinters();
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
   runPrinterStatusCheck();
+
+  // Cash registers (with their default printer) are cached and refreshed
+  // every 5 minutes, so orders don't need a lookup each.
+  await fetchAndCacheCashRegisters();
+  setInterval(fetchAndCacheCashRegisters, 5 * 60 * 1000);
 
   // Refresh printers every 2 minutes (120000 ms).
   // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
