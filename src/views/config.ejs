@@ -613,6 +613,13 @@
           Caricamento categorie...
         </div>
       </div>
+
+      <label style="display:flex;align-items:center;gap:0.75rem;cursor:pointer;padding:0.5rem 0;margin-top:0.75rem;">
+        <div class="checkbox-wrapper" style="margin:0;">
+          <input type="checkbox" id="singleTicketNotesToggle" onchange="onSingleTicketNotesToggleChange()">
+        </div>
+        <span style="font-size:0.9rem;font-weight:500;">Stampa le note anche sul ticket singolo</span>
+      </label>
     </div>
 
     <!-- Station Tickets -->
@@ -726,6 +733,7 @@
     var selectedIds = [];
     var originalIds = [];
     var stationTicketsEnabled = false;
+    var singleTicketNotesEnabled = false;
     var excludedFoodIds = [];
     var foodsCache = {};
     var expandedCategories = {};
@@ -767,12 +775,14 @@
         selectedIds = config.singleTicketCategories || [];
         originalIds = selectedIds.slice();
         stationTicketsEnabled = !!config.stationTicketsEnabled;
+        singleTicketNotesEnabled = !!config.singleTicketNotesEnabled;
         excludedFoodIds = config.excludedFoodIds || [];
 
         categories.sort(function (a, b) { return (a.position || 0) - (b.position || 0); });
 
         renderTable();
         document.getElementById('stationTicketsToggle').checked = stationTicketsEnabled;
+        document.getElementById('singleTicketNotesToggle').checked = singleTicketNotesEnabled;
         document.getElementById('saveBar').style.display = 'flex';
       } catch (err) {
         document.getElementById('categoriesContainer').innerHTML =
@@ -854,6 +864,10 @@
 
     function onStationToggleChange() {
       stationTicketsEnabled = document.getElementById('stationTicketsToggle').checked;
+    }
+
+    function onSingleTicketNotesToggleChange() {
+      singleTicketNotesEnabled = document.getElementById('singleTicketNotesToggle').checked;
     }
 
     function toggleExpand(catId) {
@@ -981,6 +995,7 @@
           body: JSON.stringify({
             singleTicketCategories: selectedIds,
             stationTicketsEnabled: stationTicketsEnabled,
+            singleTicketNotesEnabled: singleTicketNotesEnabled,
             excludedFoodIds: excludedFoodIds
           })
         });

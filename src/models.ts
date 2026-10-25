@@ -183,7 +183,6 @@ export interface OrderItemIn {
     id: string;
     name: string;
     printerId?: string | null;
-    categoryId?: string | null;
     category?: {
       id: string;
       name: string;
@@ -240,22 +239,6 @@ export interface IncomingOrder {
    * `reprint-order`.
    */
   reprintReceipt?: boolean;
-}
-
-/**
- * API response when fetching a single food by ID via
- * GET /v1/foods/{id}. The food may include additional optional
- * properties such as categoryId or printerId that are useful for
- * routing the item to a specific kitchen printer.
- */
-export interface FoodFromApi {
-  id: string;
-  name: string;
-  description?: string | null;
-  price: number | string;
-  printerId?: string | null;
-  categoryId?: string | null;
-  available?: boolean;
 }
 
 /**

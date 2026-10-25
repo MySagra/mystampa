@@ -6,6 +6,8 @@
  * jobs. It also serves EJS pages for login and configuration.
  */
 
+// Must be the first import: other modules read process.env at load time.
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import axios from 'axios';
 import axiosInstance from './utils/axiosInstance';
@@ -13,15 +15,12 @@ import cookieParser from 'cookie-parser';
 import net from 'net';
 import path from 'path';
 import fs from 'fs';
-import dotenv from 'dotenv';
 import { Printer } from './models';
 import { handlePrintOrder, handleOrderCancelled, handleOpenDrawer, handleOpenDrawerByCashRegister } from './routes/print';
 import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
-
-
-dotenv.config();
+import { fetchAndCacheCashRegisters } from './utils/cashRegistersCache';
 
 if (!process.env.API_KEY) {
   console.error('[Config] FATAL: API_KEY env var not set. Set it in .env or environment and restart.');
@@ -268,6 +267,11 @@ async function initialize(): Promise<void> {
   console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
   runPrinterStatusCheck();
 
+  // Cash registers (with their default printer) are cached and refreshed
+  // every 5 minutes, so orders don't need a lookup each.
+  await fetchAndCacheCashRegisters();
+  setInterval(fetchAndCacheCashRegisters, 5 * 60 * 1000);
+
   // Refresh printers every 2 minutes (120000 ms).
   // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
   let isUpdatingPrinters = false;
@@ -418,6 +422,10 @@ try {
       process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
       console.log('Loaded excludedFoodIds from config.json');
     }
+    if (savedConfig.singleTicketNotesEnabled !== undefined) {
+      process.env.SINGLE_TICKET_NOTES_ENABLED = savedConfig.singleTicketNotesEnabled ? 'true' : 'false';
+      console.log('Loaded singleTicketNotesEnabled from config.json:', savedConfig.singleTicketNotesEnabled);
+    }
   }
 } catch (e) {
   console.error('Failed to load config.json on startup:', e);
@@ -565,6 +573,7 @@ interface AppConfig {
   singleTicketCategories: string[];
   stationTicketsEnabled: boolean;
   excludedFoodIds: string[];
+  singleTicketNotesEnabled: boolean;
 }
 
 async function readConfig(): Promise<AppConfig> {
@@ -576,13 +585,14 @@ async function readConfig(): Promise<AppConfig> {
       singleTicketCategories: parsed.singleTicketCategories ?? [],
       stationTicketsEnabled: parsed.stationTicketsEnabled ?? false,
       excludedFoodIds: parsed.excludedFoodIds ?? [],
+      singleTicketNotesEnabled: parsed.singleTicketNotesEnabled ?? false,
     };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error('Failed to read config file:', e);
     }
   }
-  return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [] };
+  return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [], singleTicketNotesEnabled: false };
 }
 
 async function writeConfig(config: AppConfig): Promise<void> {
@@ -591,6 +601,7 @@ async function writeConfig(config: AppConfig): Promise<void> {
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
   process.env.STATION_TICKETS_ENABLED = config.stationTicketsEnabled ? 'true' : 'false';
   process.env.EXCLUDED_FOOD_IDS = config.excludedFoodIds.join(',');
+  process.env.SINGLE_TICKET_NOTES_ENABLED = config.singleTicketNotesEnabled ? 'true' : 'false';
 }
 
 /**
@@ -648,7 +659,7 @@ app.get('/api/config', async (req: Request, res: Response) => {
 app.post('/api/config', async (req: Request, res: Response) => {
   if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories, stationTicketsEnabled, excludedFoodIds } = req.body;
+  const { singleTicketCategories, stationTicketsEnabled, excludedFoodIds, singleTicketNotesEnabled } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
@@ -657,6 +668,7 @@ app.post('/api/config', async (req: Request, res: Response) => {
     singleTicketCategories,
     stationTicketsEnabled: stationTicketsEnabled !== undefined ? Boolean(stationTicketsEnabled) : current.stationTicketsEnabled,
     excludedFoodIds: Array.isArray(excludedFoodIds) ? excludedFoodIds : current.excludedFoodIds,
+    singleTicketNotesEnabled: singleTicketNotesEnabled !== undefined ? Boolean(singleTicketNotesEnabled) : current.singleTicketNotesEnabled,
   };
   try {
     await writeConfig(config);

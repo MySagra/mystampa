@@ -60,6 +60,25 @@ function trimStr(v: any): string {
   return v === null || v === undefined ? '' : String(v).trim();
 }
 
+/**
+ * Format the order code for printing: zeros become a slashed "Ø"
+ * (0x9D in CP858) so they can't be mistaken for the letter O.
+ */
+function codeStr(v: any): string {
+  return trimStr(v).replace(/0/g, 'Ø');
+}
+
+/**
+ * Order code in double width on top of the given base size (GS ! n),
+ * restoring that size afterwards. Already double-width text is left as is.
+ */
+function wideCode(v: any, baseSize = 0x00): string {
+  const code = codeStr(v);
+  if (!code || baseSize & 0x70) return code;
+  const size = (n: number) => "\x1D!" + String.fromCharCode(n);
+  return size(baseSize | 0x10) + code + size(baseSize);
+}
+
 // Convert UTC date string to Italy local time (DD/MM/YYYY HH:MM).
 // Explicit timeZone required: Node.js in Docker runs with TZ=UTC so
 // methods like getHours() and Intl without timeZone both return UTC.
@@ -177,7 +196,7 @@ export function buildKitchenReceipt(
   if (SHOW_NUMBERS) {
     if (order.ticketNumber != null) topInfo = `N°: ${order.ticketNumber} - ${topInfo}`;
   } else {
-    if (trimStr(order.displayCode)) topInfo = `COD: ${trimStr(order.displayCode)} - ${topInfo}`;
+    if (codeStr(order.displayCode)) topInfo = `COD: ${codeStr(order.displayCode)} - ${topInfo}`;
   }
 
   // Aggiunta ORA sulla stessa riga (se c'è spazio, o andrà accapo automaticamente se troppo lungo)
@@ -227,11 +246,11 @@ export function buildKitchenReceipt(
   if (SHOW_NUMBERS) {
     if (order.ticketNumber != null)
       out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
-    if (trimStr(order.displayCode))
-      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+    if (codeStr(order.displayCode))
+      out.push(cut(`CODICE: ${wideCode(order.displayCode)}`, RECEIPT_W));
   } else {
-    if (trimStr(order.displayCode))
-      out.push(TXT_MEDIUM + `CODICE: ${trimStr(order.displayCode)}` + TXT_NORMAL);
+    if (codeStr(order.displayCode))
+      out.push(TXT_MEDIUM + `CODICE: ${wideCode(order.displayCode, 0x01)}` + TXT_NORMAL);
   }
 
   out.push(line("-"));
@@ -332,11 +351,11 @@ export async function buildCashReceipt(
   if (SHOW_NUMBERS) {
     if (order.ticketNumber != null)
       out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
-    if (trimStr(order.displayCode))
-      out.push(cut(`CODICE: ${trimStr(order.displayCode)}`, RECEIPT_W));
+    if (codeStr(order.displayCode))
+      out.push(cut(`CODICE: ${wideCode(order.displayCode)}`, RECEIPT_W));
   } else {
-    if (trimStr(order.displayCode))
-      out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${order.displayCode}` + BOLD_OFF + TXT_NORMAL);
+    if (codeStr(order.displayCode))
+      out.push(TXT_BIG + BOLD_ON + `Codice Ordine: ${codeStr(order.displayCode)}` + BOLD_OFF + TXT_NORMAL);
     if (trimStr(order.ticketNumber))
       out.push(cut(`NUMERO: ${trimStr(order.ticketNumber)}`, RECEIPT_W));
   }
@@ -486,6 +505,7 @@ export async function buildCashReceipt(
     const FEED_AND_CUT = Buffer.from(ESC + "d" + "\x06" + ESC + "i", "ascii");
     const GS = "\x1D";
     const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
+    const TXT_MEDIUM = GS + "!" + "\x01"; // double height only
     const TXT_NORMAL = GS + "!" + "\x00";
 
     for (const ticket of singleTickets) {
@@ -496,15 +516,22 @@ export async function buildCashReceipt(
 
       let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
 
+      // Note presenti solo se abilitate nelle impostazioni (filtrate a monte)
+      if (trimStr(ticket.notes)) {
+        for (const wrapNote of wrapText(`NOTE: ${trimStr(ticket.notes)}`, RECEIPT_W, "      ")) {
+          ticketStr += `${TXT_MEDIUM}${wrapNote}${TXT_NORMAL}\n`;
+        }
+      }
+
       let subTitle = "";
       if (SHOW_NUMBERS) {
         if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
-        if (trimStr(order.displayCode)) {
+        if (codeStr(order.displayCode)) {
           if (subTitle) subTitle += ` - `;
-          subTitle += `COD: ${trimStr(order.displayCode)}`;
+          subTitle += `COD: ${wideCode(order.displayCode)}`;
         }
       } else {
-        if (trimStr(order.displayCode)) subTitle += `CODICE: ${trimStr(order.displayCode)}`;
+        if (codeStr(order.displayCode)) subTitle += `CODICE: ${wideCode(order.displayCode)}`;
       }
       if (trimStr(order.customer)) {
         if (subTitle) subTitle += ` - `;
@@ -542,8 +569,8 @@ export async function buildCashReceipt(
 
       // Identificatore ordine grande (numero o codice in base a SHOW_NUMBERS)
       const orderIdLabel = SHOW_NUMBERS
-        ? (order.ticketNumber != null ? `N° ${order.ticketNumber}` : trimStr(order.displayCode))
-        : (trimStr(order.displayCode) || (order.ticketNumber != null ? `N° ${order.ticketNumber}` : ''));
+        ? (order.ticketNumber != null ? `N° ${order.ticketNumber}` : codeStr(order.displayCode))
+        : (codeStr(order.displayCode) || (order.ticketNumber != null ? `N° ${order.ticketNumber}` : ''));
 
       let ticketStr = `\n\n`;
       if (orderIdLabel) {
@@ -554,7 +581,7 @@ export async function buildCashReceipt(
       // Riga secondaria: info complementare + cliente
       let subTitle = "";
       if (SHOW_NUMBERS) {
-        if (trimStr(order.displayCode)) subTitle += `COD: ${trimStr(order.displayCode)}`;
+        if (codeStr(order.displayCode)) subTitle += `COD: ${wideCode(order.displayCode)}`;
       } else {
         if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
       }
@@ -783,14 +810,14 @@ export function buildCancellationReceipt(
   const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
 
   const identifier = SHOW_NUMBERS
-    ? (ticketNumber != null ? `N° ${ticketNumber}` : trimStr(displayCode))
-    : trimStr(displayCode);
+    ? (ticketNumber != null ? `N° ${ticketNumber}` : codeStr(displayCode))
+    : codeStr(displayCode);
 
   out.push("");
   out.push(line("="));
   out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + identifier + BOLD_OFF + TXT_NORMAL);
-  if (SHOW_NUMBERS && trimStr(displayCode)) {
-    out.push(TXT_MEDIUM + cut(`CODICE: ${trimStr(displayCode)}`, RECEIPT_W) + TXT_NORMAL);
+  if (SHOW_NUMBERS && codeStr(displayCode)) {
+    out.push(TXT_MEDIUM + cut(`CODICE: ${wideCode(displayCode, 0x01)}`, RECEIPT_W) + TXT_NORMAL);
   } else if (!SHOW_NUMBERS && ticketNumber != null) {
     out.push(TXT_MEDIUM + `N°: ${ticketNumber}` + TXT_NORMAL);
   }
