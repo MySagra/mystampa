@@ -486,6 +486,7 @@ export async function buildCashReceipt(
     const FEED_AND_CUT = Buffer.from(ESC + "d" + "\x06" + ESC + "i", "ascii");
     const GS = "\x1D";
     const TXT_BIG = GS + "!" + "\x11"; // 2x width + 2x height
+    const TXT_MEDIUM = GS + "!" + "\x01"; // double height only
     const TXT_NORMAL = GS + "!" + "\x00";
 
     for (const ticket of singleTickets) {
@@ -495,6 +496,13 @@ export async function buildCashReceipt(
       const name = trimStr(ticket.foodName).toUpperCase();
 
       let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
+
+      // Note presenti solo se abilitate nelle impostazioni (filtrate a monte)
+      if (trimStr(ticket.notes)) {
+        for (const wrapNote of wrapText(`NOTE: ${trimStr(ticket.notes)}`, RECEIPT_W, "      ")) {
+          ticketStr += `${TXT_MEDIUM}${wrapNote}${TXT_NORMAL}\n`;
+        }
+      }
 
       let subTitle = "";
       if (SHOW_NUMBERS) {

@@ -3,8 +3,8 @@
  *
  * This module exports a standalone function `handlePrintOrder` that
  * contains the business logic for processing incoming orders.
- * It queries the external API for each food item to determine its
- * associated kitchen printer, looks up the cash register printer,
+ * Food details (name, kitchen printer, category, station) come
+ * embedded in the SSE event. It looks up the cash register printer,
  * aggregates items per printer and generates separate receipts for
  * kitchen and cash printers.
  */
@@ -12,7 +12,6 @@
 import axiosInstance from "../utils/axiosInstance";
 import {
   IncomingOrder,
-  FoodFromApi,
   CashRegisterFromApi,
   Printer,
   IdLike,
@@ -187,6 +186,7 @@ export async function handlePrintOrder(
     : [];
 
   const stationTicketsEnabled = process.env.STATION_TICKETS_ENABLED === 'true';
+  const singleTicketNotesEnabled = process.env.SINGLE_TICKET_NOTES_ENABLED === 'true';
 
   // Determine which items go to kitchen printers.
   // For reprint-order events, use reprintOrderItems exclusively (even if empty = no kitchen print).
@@ -195,39 +195,12 @@ export async function handlePrintOrder(
     ? (order.reprintOrderItems || [])
     : order.orderItems;
 
-  // Collect all unique food IDs from both kitchen and cash items for API lookups
-  const allItems = [...order.orderItems, ...(order.reprintOrderItems || [])];
-  const allFoodIds = Array.from(new Set(allItems.map(it => it.foodId || it.food?.id).filter(Boolean))) as string[];
-
-  const foodDetails = new Map<string, FoodFromApi>();
-  if (targetCategoryIds.length > 0 || allFoodIds.length > 0) {
-    await Promise.all(allFoodIds.map(async (fId) => {
-      try {
-        const r = await axiosInstance.get<FoodFromApi>(
-          `${API_URL}/v1/foods/${fId}`,
-          {
-            headers: {
-              Accept: "application/json",
-              'X-API-KEY': apiKey,
-            }
-          }
-        );
-        foodDetails.set(fId, r.data);
-      } catch (e) {
-        console.error(`[Print] Failed to fetch food details for ${fId}`, e);
-      }
-    }));
-  }
-
   // Group kitchen items by printer
   for (const it of kitchenItems) {
-    const fId = it.foodId || it.food?.id;
-    const apiFood = fId ? foodDetails.get(fId) : undefined;
-
-    const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
+    const foodName = it.food?.name ?? `FOOD(${it.id})`;
     const qty = it.quantity ?? 1;
     const notes = it.notes ?? null;
-    const printerId = trimStr(apiFood?.printerId ?? it.food?.printerId);
+    const printerId = trimStr(it.food?.printerId);
 
     if (printerId) {
       const arr = kitchenByPrinterId.get(printerId) ?? [];
@@ -239,9 +212,7 @@ export async function handlePrintOrder(
   // Build cash receipt lines from orderItems (always the full order)
   for (const it of order.orderItems) {
     const fId = it.foodId || it.food?.id;
-    const apiFood = fId ? foodDetails.get(fId) : undefined;
-
-    const foodName = apiFood?.name ?? it.food?.name ?? `FOOD(${it.id})`;
+    const foodName = it.food?.name ?? `FOOD(${it.id})`;
     const qty = it.quantity ?? 1;
     const notes = it.notes ?? null;
 
@@ -257,10 +228,10 @@ export async function handlePrintOrder(
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
 
-    const categoryId = apiFood?.categoryId ?? it.food?.categoryId;
+    const categoryId = it.food?.category?.id;
     if (categoryId && targetCategoryIds.includes(String(categoryId)) &&
         !(fId && excludedFoodIds.includes(String(fId)))) {
-      singleTickets.push({ foodName, quantity: qty, notes });
+      singleTickets.push({ foodName, quantity: qty, notes: singleTicketNotesEnabled ? notes : null });
     }
   }
 

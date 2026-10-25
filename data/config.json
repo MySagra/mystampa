@@ -1,9 +1,10 @@
 {
   "singleTicketCategories": [
-    "cmingx48l0005356ms7gmayez"
+    "cmvo40lyp00044aqqj431ilrr"
   ],
   "stationTicketsEnabled": true,
   "excludedFoodIds": [
     "cmpysnlj0003n3fowvhcxt5vj"
-  ]
+  ],
+  "singleTicketNotesEnabled": true
 }
