@@ -1,5 +1,8 @@
 import axiosInstance from './axiosInstance';
 import { CashRegisterFromApi, Printer } from '../models';
+import { createLogger } from './logger';
+
+const log = createLogger('cashRegisters');
 
 const API_URL = process.env.API_URL || 'http://localhost:4300';
 
@@ -14,9 +17,9 @@ export async function fetchAndCacheCashRegisters(): Promise<void> {
   try {
     const resp = await axiosInstance.get<CashRegisterFromApi[]>(`${API_URL}/v1/cash-registers?include=printer`);
     cache = new Map(resp.data.map((cr) => [String(cr.id).trim(), cr]));
-    console.log(`[CashRegisters] Cached ${cache.size} cash registers`);
+    log.debug('Cash registers cached', { count: cache.size });
   } catch (err: any) {
-    console.error('[CashRegisters] Failed to fetch cash registers:', err.message);
+    log.error('Failed to fetch cash registers', { err });
   }
 }
 

@@ -2,6 +2,9 @@
 import { sendToPrinter, getPrinterStatus } from "./printer";
 import { resolveEffectiveIp, resolveIpFromMac } from "./arp";
 import { patchPrinterIp } from "./api";
+import { createLogger, errorMessage } from "./logger";
+
+const log = createLogger("printQueue");
 
 interface PrintJob {
     id: string; // unique job id
@@ -27,7 +30,7 @@ class PrintQueueManager {
 
     public add(printerId: string, ip: string, port: number, data: (string | Buffer)[] | string | Buffer, mac?: string | null) {
         if (this.queue.length >= this.MAX_QUEUE_SIZE) {
-            console.warn(`[PrintQueue] Queue full (${this.MAX_QUEUE_SIZE} jobs). Dropping job for printer ${printerId}.`);
+            log.error('Queue full, dropping job', { printerId, maxQueueSize: this.MAX_QUEUE_SIZE });
             return;
         }
         const job: PrintJob = {
@@ -41,8 +44,7 @@ class PrintQueueManager {
             attempts: 0,
         };
         this.queue.push(job);
-        const addr = mac ? `MAC:${mac}` : `${ip}:${port}`;
-        console.log(`[PrintQueue] Job added for printer ${printerId} (${addr}). Queue size: ${this.queue.length}`);
+        log.info('Job added to queue', { jobId: job.id, printerId, ip, port, mac, queueSize: this.queue.length });
 
         // Optional: Trigger processing immediately if not running/waiting
         // But requirement says "if negative, create a queue", implying we wait for condition to change.
@@ -51,7 +53,7 @@ class PrintQueueManager {
 
     public start() {
         if (this.checkInterval) return;
-        console.log("[PrintQueue] Starting queue manager...");
+        log.info('Starting queue manager', { intervalMs: this.INTERVAL_MS });
         this.checkInterval = setInterval(() => this.processQueue(), this.INTERVAL_MS);
     }
 
@@ -67,7 +69,7 @@ class PrintQueueManager {
         if (this.queue.length === 0) return;
 
         this.isProcessing = true;
-        console.log(`[PrintQueue] Processing queue. Jobs pending: ${this.queue.length}`);
+        log.info('Processing queue', { queueSize: this.queue.length });
 
         const remainingJobs: PrintJob[] = [];
 
@@ -90,19 +92,19 @@ class PrintQueueManager {
                 try {
                     status = await getPrinterStatus(effectiveIp, port);
                 } catch (err) {
-                    console.warn(`[PrintQueue] getPrinterStatus failed for ${printerId} at ${effectiveIp}:${port}:`, err);
+                    log.warn('Printer status check failed', { printerId, ip: effectiveIp, port, error: errorMessage(err) });
                     // Connection to IP failed — try MAC fallback if available
                     if (ip && mac) {
                         const macIp = resolveIpFromMac(mac);
                         if (macIp && macIp !== effectiveIp) {
-                            console.log(`[PrintQueue] IP ${effectiveIp} unreachable, retrying with MAC-resolved IP ${macIp}`);
+                            log.info('IP unreachable, retrying with MAC-resolved IP', { printerId, ip: effectiveIp, macIp, port });
                             try {
                                 status = await getPrinterStatus(macIp, port);
                                 effectiveIp = macIp;
                                 // IP changed — update DB asynchronously
                                 patchPrinterIp(printerId, macIp);
                             } catch {
-                                console.log(`[PrintQueue] Printer ${printerId} unreachable via IP and MAC. Keep jobs in queue.`);
+                                log.warn('Printer unreachable via IP and MAC, keeping jobs in queue', { printerId, jobs: jobs.length });
                                 remainingJobs.push(...jobs);
                                 continue;
                             }
@@ -116,29 +118,29 @@ class PrintQueueManager {
                     }
                 }
 
-                console.log(`[PrintQueue] Printer ${printerId} status: ${status}`);
+                log.debug('Printer status', { printerId, status });
 
                 if (status === "OK" || status === "CARTA_QUASI_FINITA") {
                     // Printer is ready, try to print all jobs for this printer
                     for (const job of jobs) {
                         try {
                             await sendToPrinter(effectiveIp, job.port, job.data);
-                            console.log(`[PrintQueue] Job ${job.id} printed successfully.`);
+                            log.info('Queued job printed', { jobId: job.id, printerId, ip: effectiveIp, port: job.port });
                         } catch (err) {
-                            console.error(`[PrintQueue] Failed to print job ${job.id} despite OK status:`, err);
+                            log.error('Failed to print queued job despite OK status', { jobId: job.id, printerId, ip: effectiveIp, port: job.port, error: errorMessage(err) });
                             remainingJobs.push(job);
                         }
                     }
                 } else {
                     // Status not OK (e.g. CARTA_FINITA), keep all jobs
-                    console.log(`[PrintQueue] Printer ${printerId} not ready. Keep jobs in queue.`);
+                    log.warn('Printer not ready, keeping jobs in queue', { printerId, status, jobs: jobs.length });
                     remainingJobs.push(...jobs);
                 }
             }
 
             this.queue = remainingJobs;
         } catch (err) {
-            console.error('[PrintQueue] Unexpected error during queue processing:', err);
+            log.error('Unexpected error during queue processing', { err });
         } finally {
             // Always release the lock so subsequent intervals can run
             this.isProcessing = false;

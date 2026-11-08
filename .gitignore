@@ -6,4 +6,5 @@ dist/
 build/
 coverage/
 npm-debug.log*
+logs/
 .claude

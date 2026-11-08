@@ -24,6 +24,9 @@ import path from 'path';
 import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
+import { createLogger } from './logger';
+
+const log = createLogger('printer');
 
 const SHOW_NUMBERS = process.env.SHOW_NUMBERS === 'true';
 
@@ -464,7 +467,7 @@ export async function buildCashReceipt(
       if (logoBuf.length > 0) {
         parts.push(logoBuf);
       } else {
-        console.warn(`[Printer] Logo at ${logoPath} returned empty buffer, skipping.`);
+        log.warn('Logo returned empty buffer, skipping', { path: logoPath });
       }
       break;
     }
@@ -490,7 +493,7 @@ export async function buildCashReceipt(
     if (mysagraFooterBuf.length > 0) {
       parts.push(mysagraFooterBuf);
     } else {
-      console.warn(`[Printer] Footer image at ${mysagraPath} returned empty buffer, skipping.`);
+      log.warn('Footer image returned empty buffer, skipping', { path: mysagraPath });
     }
   }
 
@@ -773,8 +776,7 @@ export async function getPrinterStatus(ip: string, port: number): Promise<string
       client.removeListener("error", onError);
       client.destroy();
 
-      console.log("Carta finita: ", paperEnded);
-      console.log("Carta quasi finita: ", paperLow);
+      log.debug('Paper status', { ip, port, paperEnded, paperLow });
 
       if (paperEnded) resolve("CARTA_FINITA");
       else if (paperLow) resolve("CARTA_QUASI_FINITA");

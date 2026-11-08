@@ -1,4 +1,7 @@
 import axiosInstance from './axiosInstance';
+import { createLogger } from './logger';
+
+const log = createLogger('stations');
 
 export interface StationData {
   id: string;
@@ -34,8 +37,8 @@ export async function fetchAndCacheStations(apiUrl: string, apiKey: string): Pro
       return { id: s.id, name: s.name, categoryIds };
     });
     categoryToStation = newMap;
-    console.log(`[Stations] Cached ${cache.length} stations, ${newMap.size} categories mapped`);
+    log.debug('Stations cached', { stations: cache.length, categories: newMap.size });
   } catch (err: any) {
-    console.error('[Stations] Failed to fetch stations:', err.message);
+    log.error('Failed to fetch stations', { err });
   }
 }

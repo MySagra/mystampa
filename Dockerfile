@@ -24,6 +24,8 @@ FROM base AS runner
 WORKDIR /app
 
 ENV NODE_ENV production
+# Local time for log timestamps and for the daily log file boundary
+ENV TZ Europe/Rome
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 expressjs
@@ -44,7 +46,8 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/assets ./assets
 COPY --from=builder /app/assets ./default-assets
 
-RUN mkdir -p data && chown -R expressjs:nodejs data
+RUN apk add --no-cache tzdata
+RUN mkdir -p data logs && chown -R expressjs:nodejs data logs
 
 USER expressjs
 

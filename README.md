@@ -203,10 +203,26 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 |-----------|----------------------------------------------------------|----------------------------------|
 | `API_URL` | Base URL of the MySagra backend                          | `http://mysagra-backend:4300`    |
 | `API_KEY` | API key for the automated print service (`X-API-KEY`)    | `ms_pt_xxxxxxxxxxxxx`            |
+| `LOG_LEVEL` | Log verbosity: `error`, `warn`, `info`, `http`, `verbose`, `debug`, `silly` (default `info`) | `info` |
+| `LOG_DIR` | Directory for the daily log files (default `./logs`)      | `/app/logs`                      |
+| `TZ`      | Time zone of log timestamps and daily log files (Docker image default `Europe/Rome`) | `Europe/Rome` |
 
 > **How to get the API key**: the API key is generated and displayed after your first login to the MySagra admin panel. Once obtained, copy it into the `API_KEY` field in your `.env` file and restart the service.
 
 > The API key is used exclusively by the automated service (SSE connection, printer fetching, status patching, food/cash-register lookups). The web UI authenticates separately using user credentials.
+
+---
+
+## Logging
+
+Logs are written to two places:
+
+- **stdout** — one readable line per entry, available through `docker logs mystampa`. Docker keeps at most 3 files of 10 MB each with the provided `docker-compose.yml`.
+- **`LOG_DIR/mystampa-YYYY-MM-DD.log`** — one JSON object per line, with fields such as `module`, `printerId` and `eventType`.
+
+A new file starts every day at midnight in the `TZ` time zone. Files are kept for 7 days, today included; older ones are deleted at startup and then checked every hour. In Docker they live in the named volume `mystampa_logs`, so they survive container restarts and image updates. If you deploy with your own compose file, mount a volume on `/app/logs`. If the directory is not writable, the service keeps running and logs to stdout only.
+
+API keys, cookies, tokens and passwords are removed from log entries. At the default `info` level an SSE event is logged as a summary; `LOG_LEVEL=debug` also logs the full payload, including customer names and notes.
 
 ---
 
@@ -223,7 +239,8 @@ mystampa/
 │   │   ├── axiosInstance.ts  # Axios with retry interceptor
 │   │   ├── printer.ts        # ESC/POS receipt builder and TCP send
 │   │   ├── printQueue.ts     # Failed-job queue with periodic retry
-│   │   └── image.ts          # Logo rasterization for ESC/POS
+│   │   ├── image.ts          # Logo rasterization for ESC/POS
+│   │   └── logger.ts         # Structured logging, daily files, 7-day retention
 │   └── views/
 │       ├── login.ejs         # Web UI login page
 │       └── config.ejs        # Web UI configuration page
