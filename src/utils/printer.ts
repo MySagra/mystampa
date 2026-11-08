@@ -864,7 +864,9 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
     return padRight(leftCut, Math.max(0, leftW)) + repeat(" ", space) + right;
   };
 
-  const eur = (n: number) => {
+  // Report amounts arrive as strings: the backend serializes them from Decimal.
+  const eur = (value: unknown) => {
+    const n = toNumber(value);
     const v = Number.isFinite(n) ? n : 0;
     return `€${v.toFixed(2).replace(".", ",")}`;
   };
