@@ -1,4 +1,7 @@
 import Jimp from 'jimp';
+import { createLogger } from './logger';
+
+const log = createLogger('image');
 
 export interface ImageOptions {
     paperWidth?: number;       // default 384
@@ -104,7 +107,7 @@ export async function loadImageAsEscPos(
         // Return header + data
         return Buffer.concat([header, data]);
     } catch (err) {
-        console.error(`[ImageToEscPos] Failed to process image ${filePath}:`, err);
+        log.error('Failed to process image', { filePath, err });
         return Buffer.alloc(0);
     }
 }

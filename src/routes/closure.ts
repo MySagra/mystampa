@@ -13,6 +13,10 @@ import { printQueue } from "../utils/printQueue";
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
 import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 import { resolveCashRegisterPrinter } from "../utils/cashRegistersCache";
+import { createLogger, errorMessage } from "../utils/logger";
+
+const log = createLogger("closure.safePrint");
+const closureLog = createLogger("closure");
 
 function trimStr(v: any): string {
   return v === null || v === undefined ? '' : String(v).trim();
@@ -33,7 +37,7 @@ async function safePrint(
   // Prefer IP; if not available resolve from MAC
   const primaryIp = resolveEffectiveIp(ip, mac);
   if (!primaryIp) {
-    console.error(`[SafePrint] No address available for printer ${printerId}`);
+    log.error('No address available for printer', { printerId, mac });
     return;
   }
 
@@ -43,29 +47,29 @@ async function safePrint(
   try {
     status = await getPrinterStatus(targetIp, port);
   } catch (err) {
-    console.warn(`[SafePrint] getPrinterStatus failed for ${printerId} at ${targetIp}:${port}:`, err);
+    log.warn('Printer status check failed', { printerId, ip: targetIp, port, error: errorMessage(err) });
     // Connection to IP failed — if we have both IP and MAC, try MAC-resolved IP
     if (ip && mac) {
       const macIp = resolveIpFromMac(mac);
       if (macIp && macIp !== targetIp) {
-        console.log(`[SafePrint] IP ${targetIp} unreachable, retrying with MAC-resolved IP ${macIp}`);
+        log.info('IP unreachable, retrying with MAC-resolved IP', { printerId, ip: targetIp, macIp, port });
         try {
           status = await getPrinterStatus(macIp, port);
           targetIp = macIp;
           // IP changed — update DB asynchronously (don't block printing)
           patchPrinterIp(printerId, macIp);
         } catch {
-          console.error(`[SafePrint] Both IP and MAC-resolved IP failed for ${printerId}, adding to queue.`);
+          log.error('Both IP and MAC-resolved IP failed, adding job to queue', { printerId, ip: targetIp, macIp, port });
           printQueue.add(printerId, ip, port, data, mac);
           return;
         }
       } else {
-        console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+        log.error('Status check failed, adding job to queue', { printerId, ip: targetIp, port });
         printQueue.add(printerId, ip, port, data, mac);
         return;
       }
     } else {
-      console.error(`[SafePrint] Status check failed for ${printerId}, adding to queue.`);
+      log.error('Status check failed, adding job to queue', { printerId, ip: targetIp, port });
       printQueue.add(printerId, primaryIp, port, data, mac);
       return;
     }
@@ -74,20 +78,20 @@ async function safePrint(
   if (status === "OK" || status === "CARTA_QUASI_FINITA") {
     try {
       await sendToPrinter(targetIp, port, data);
-      console.log(`[SafePrint] Printed successfully to ${printerId} (${targetIp}:${port})`);
+      log.info('Printed successfully', { printerId, ip: targetIp, port });
       // If the printer was not ONLINE in the DB, patch it now that we know it's reachable
       const cached = printers?.find((p) => p.id === printerId);
       if (cached && cached.status !== 'ONLINE') {
-        console.log(`[SafePrint] Printer ${printerId} was ${cached.status} but printed successfully — patching to ONLINE`);
+        log.info('Printer reachable again, patching status to ONLINE', { printerId, previousStatus: cached.status });
         cached.status = 'ONLINE';
         patchPrinterStatus(printerId, 'ONLINE').catch(() => {});
       }
     } catch (printErr) {
-      console.error(`[SafePrint] Print failed for ${printerId}, adding to queue:`, printErr);
+      log.error('Print failed, adding job to queue', { printerId, ip: targetIp, port, error: errorMessage(printErr) });
       printQueue.add(printerId, ip || primaryIp, port, data, mac);
     }
   } else {
-    console.warn(`[SafePrint] Printer ${printerId} status '${status}', adding to queue.`);
+    log.warn('Printer not ready, adding job to queue', { printerId, ip: targetIp, port, status });
     printQueue.add(printerId, ip || primaryIp, port, data, mac);
   }
 }
@@ -115,11 +119,11 @@ export async function handleGeneralClosure(
       return { ok: false, error: "Missing cashRegister ID in payload" };
     }
 
-    console.log(`[Closure] Processing general-closure for cash register: ${cashRegisterId}`);
+    closureLog.info('Processing general closure', { cashRegisterId });
 
     const printer = await resolveCashRegisterPrinter(cashRegisterId, printers);
     if (!printer || !printer.ip || !printer.port) {
-      console.error("[Closure] No printer found for cash register:", cashRegisterId);
+      closureLog.error('No printer found for cash register', { cashRegisterId });
       return { ok: false, error: "No printer configured for this cash register" };
     }
     const cashRegisterPrinterId = trimStr(printer.id);
@@ -127,18 +131,18 @@ export async function handleGeneralClosure(
     const printerPort = printer.port;
     const printerMac = printer.mac;
 
-    console.log(`[Closure] Using printer ${cashRegisterPrinterId} at ${printerIp}:${printerPort}`);
+    closureLog.info('Using cash register printer', { cashRegisterId, printerId: cashRegisterPrinterId, ip: printerIp, port: printerPort });
 
     // Build closure report receipts
     const receipts = buildGeneralClosureReport(payload);
 
-    console.log(`[Closure] Generated ${receipts.length} receipts (1 main report + ${receipts.length - 1} category tickets)`);
+    closureLog.info('Closure receipts generated', { cashRegisterId, receipts: receipts.length, categoryTickets: receipts.length - 1 });
 
     // Print all receipts
     for (let i = 0; i < receipts.length; i++) {
       const receipt = receipts[i];
       const receiptType = i === 0 ? "Main Report" : `Category ${i}`;
-      console.log(`[Closure] Printing ${receiptType}...`);
+      closureLog.debug('Printing closure receipt', { cashRegisterId, printerId: cashRegisterPrinterId, receiptType });
       
       await safePrint(
         cashRegisterPrinterId,
@@ -150,10 +154,10 @@ export async function handleGeneralClosure(
       );
     }
 
-    console.log("[Closure] General closure report printed successfully");
+    closureLog.info('General closure report sent to printer', { cashRegisterId, printerId: cashRegisterPrinterId });
     return { ok: true };
   } catch (err: any) {
-    console.error("[Closure] Error processing general-closure:", err);
+    closureLog.error('Error processing general closure', { cashRegisterId: payload?.cashRegister, err });
     return { ok: false, error: err.message || "Unknown error" };
   }
 }

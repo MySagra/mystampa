@@ -1,4 +1,7 @@
 import axios from 'axios';
+import { createLogger } from './logger';
+
+const log = createLogger('http');
 
 const MAX_RETRIES = 6;
 const RETRY_BASE_MS = 1000;
@@ -22,7 +25,7 @@ axiosInstance.interceptors.request.use(
   (config) => {
     const apiKey = process.env.API_KEY || '';
     config.headers['X-API-KEY'] = apiKey;
-    console.log(`[Axios] ${config.method?.toUpperCase()} ${config.url}`);
+    log.debug('Request', { method: config.method?.toUpperCase(), url: config.url });
     return config;
   },
   (error) => Promise.reject(error)
@@ -36,18 +39,18 @@ axiosInstance.interceptors.response.use(
     const errMsg = extractApiError(error);
 
     if (status === 401) {
-      console.error(`[Axios] 401 Unauthorized — API key invalid or missing. message="${errMsg}"`);
+      log.error('Unauthorized: API key invalid or missing', { method: config?.method?.toUpperCase(), url: config?.url, status, error: errMsg });
       return Promise.reject(error);
     }
 
     if (!config || (config._retryCount ?? 0) >= MAX_RETRIES) {
-      console.error(`[Axios] Permanent failure after ${MAX_RETRIES} retries. status=${status ?? 'network'} message="${errMsg}"`);
+      log.error('Request failed permanently', { method: config?.method?.toUpperCase(), url: config?.url, status: status ?? 'network', maxRetries: MAX_RETRIES, error: errMsg });
       return Promise.reject(error);
     }
 
     config._retryCount = (config._retryCount ?? 0) + 1;
     const delay = RETRY_BASE_MS * Math.pow(2, config._retryCount);
-    console.warn(`[Axios] Request failed (status=${status ?? 'network'}, attempt ${config._retryCount}/${MAX_RETRIES}). Retry in ${delay}ms... message="${errMsg}"`);
+    log.warn('Request failed, retrying', { method: config.method?.toUpperCase(), url: config.url, status: status ?? 'network', attempt: config._retryCount, maxRetries: MAX_RETRIES, delayMs: delay, error: errMsg });
 
     await sleep(delay);
     return axiosInstance(config);

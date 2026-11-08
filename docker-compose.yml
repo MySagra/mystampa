@@ -15,6 +15,14 @@ services:
     volumes:
       - ./assets:/app/assets
       - mystampa_config:/app/data
+      - mystampa_logs:/app/logs
+    # stdout is also kept by Docker: without a cap it grows without limit
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mystampa_config:
+  mystampa_logs:

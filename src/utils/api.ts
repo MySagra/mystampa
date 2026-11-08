@@ -1,4 +1,7 @@
 import axiosInstance from './axiosInstance';
+import { createLogger } from './logger';
+
+const log = createLogger('api');
 
 const API_URL = process.env.API_URL || 'http://localhost:4300';
 
@@ -14,9 +17,9 @@ const extractApiError = (err: any): string => {
 export async function patchPrinterStatus(printerId: string, status: 'ONLINE' | 'OFFLINE' | 'ERROR'): Promise<void> {
   try {
     await axiosInstance.patch(`${API_URL}/v1/printers/${printerId}`, { status });
-    console.log(`[API] patchPrinterStatus: printer ${printerId} → ${status}`);
+    log.info('Printer status patched', { printerId, status });
   } catch (err: any) {
-    console.error(`[API] patchPrinterStatus failed for printer ${printerId}: ${extractApiError(err)}`);
+    log.error('Printer status patch failed', { printerId, status, error: extractApiError(err) });
   }
 }
 
@@ -27,8 +30,8 @@ export async function patchPrinterStatus(printerId: string, status: 'ONLINE' | '
 export async function patchPrinterIp(printerId: string, ip: string): Promise<void> {
   try {
     await axiosInstance.patch(`${API_URL}/v1/printers/${printerId}`, { ip });
-    console.log(`[API] patchPrinterIp: printer ${printerId} → ${ip}`);
+    log.info('Printer IP patched', { printerId, ip });
   } catch (err: any) {
-    console.error(`[API] patchPrinterIp failed for printer ${printerId}: ${extractApiError(err)}`);
+    log.error('Printer IP patch failed', { printerId, ip, error: extractApiError(err) });
   }
 }

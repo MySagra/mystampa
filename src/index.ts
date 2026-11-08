@@ -8,6 +8,7 @@
 
 // Must be the first import: other modules read process.env at load time.
 import 'dotenv/config';
+import { createLogger } from './utils/logger';
 import express, { Request, Response } from 'express';
 import axios from 'axios';
 import axiosInstance from './utils/axiosInstance';
@@ -22,8 +23,15 @@ import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
 import { fetchAndCacheCashRegisters } from './utils/cashRegistersCache';
 
+const log = createLogger('app');
+const sseLog = createLogger('sse');
+const printersLog = createLogger('printers');
+const configLog = createLogger('config');
+
 if (!process.env.API_KEY) {
-  console.error('[Config] FATAL: API_KEY env var not set. Set it in .env or environment and restart.');
+  // console on purpose: the logger's streams start flowing on the next tick,
+  // so an entry logged here would be lost by the synchronous exit below.
+  console.error('FATAL: API_KEY env var not set. Set it in .env or environment and restart.');
   process.exit(1);
 }
 
@@ -41,6 +49,20 @@ let printers: Printer[] = [];
  * events by calling handlePrintOrder directly. This allows the service
  * to process orders pushed by a backend without requiring HTTP calls.
  */
+/** Fields worth keeping at info level; the full payload (customer, notes) is debug only. */
+function summarizeSSEEvent(payload: any): Record<string, unknown> {
+  const order = payload?.createdOrder ?? payload;
+  return {
+    orderId: order?.id ?? payload?.orderId,
+    displayCode: order?.displayCode,
+    ticketNumber: order?.ticketNumber,
+    cashRegisterId: order?.cashRegisterId ?? payload?.cashRegister,
+    printerId: payload?.printerId,
+    printers: payload?.printers,
+    itemCount: Array.isArray(order?.orderItems) ? order.orderItems.length : undefined,
+  };
+}
+
 /**
  * Handle a single fully-parsed SSE event. Never throws: the SSE loop must
  * keep running whatever happens while printing.
@@ -50,55 +72,56 @@ async function dispatchSSEEvent(eventType: string, eventData: string): Promise<v
   try {
     payload = JSON.parse(eventData);
   } catch (err) {
-    console.error(`SSE: invalid JSON payload (type=${eventType}, ${eventData.length} bytes)`, err);
+    sseLog.error('Invalid JSON payload', { eventType, bytes: eventData.length, err });
     return;
   }
 
   try {
-    console.log(`SSE received event (type=${eventType}):`, payload);
+    sseLog.info('Event received', { eventType, ...summarizeSSEEvent(payload) });
+    sseLog.debug('Event payload', { eventType, payload });
 
     if (eventType === 'confirmed-order' || eventType === 'reprint-order') {
       const order = payload.createdOrder ?? payload;
       if (eventType === 'confirmed-order' && String(order.paymentMethod ?? '').toUpperCase() === 'CASH' && order.cashRegisterId) {
         handleOpenDrawerByCashRegister(String(order.cashRegisterId), printers)
           .then((r) => {
-            if (r.ok) console.log('SSE: cash drawer opened for confirmed-order');
-            else console.error('SSE: cash drawer open failed:', r.error);
+            if (r.ok) sseLog.info('Cash drawer opened', { eventType, cashRegisterId: order.cashRegisterId });
+            else sseLog.error('Cash drawer open failed', { eventType, cashRegisterId: order.cashRegisterId, error: r.error });
           })
-          .catch((e) => console.error('SSE: cash drawer open error:', e));
+          .catch((err) => sseLog.error('Cash drawer open error', { eventType, cashRegisterId: order.cashRegisterId, err }));
       }
       const result = await handlePrintOrder(order, printers);
       if (result.ok) {
-        console.log('SSE: print order handled successfully', result);
+        sseLog.info('Print order handled', { eventType, orderId: order.id, kitchenPrinters: result.kitchenPrinters, cashPrinterId: result.cashPrinterId });
       } else {
-        console.error('SSE: print order failed:', result.error);
+        sseLog.error('Print order failed', { eventType, orderId: order.id, error: result.error });
       }
     } else if (eventType === 'order-cancelled') {
       const result = await handleOrderCancelled(payload, printers);
       if (result.ok) {
-        console.log('SSE: order cancellation handled successfully', result);
+        sseLog.info('Order cancellation handled', { eventType, orderId: payload.orderId });
       } else {
-        console.error('SSE: order cancellation failed:', result.error);
+        sseLog.error('Order cancellation failed', { eventType, orderId: payload.orderId, error: result.error });
       }
     } else if (eventType === 'general-closure') {
       const result = await handleGeneralClosure(payload, printers);
       if (result.ok) {
-        console.log('SSE: general closure handled successfully', result);
+        sseLog.info('General closure handled', { eventType, cashRegisterId: payload.cashRegister });
       } else {
-        console.error('SSE: general closure failed:', result.error);
+        sseLog.error('General closure failed', { eventType, cashRegisterId: payload.cashRegister, error: result.error });
       }
     } else if (eventType === 'open-drawer') {
       const result = await handleOpenDrawer(payload, printers);
       if (result.ok) {
-        console.log('SSE: cash drawer opened successfully');
+        sseLog.info('Cash drawer opened', { eventType, printerId: payload.printerId });
       } else {
-        console.error('SSE: cash drawer open failed:', result.error);
+        sseLog.error('Cash drawer open failed', { eventType, printerId: payload.printerId, error: result.error });
       }
     } else {
-      console.log(`SSE: ignoring event type '${eventType}'`);
+      sseLog.debug('Ignoring event', { eventType });
     }
   } catch (err) {
-    console.error('SSE: failed to handle event', err);
+    sseLog.error('Failed to handle event', { eventType, err });
   }
 }
 
@@ -125,12 +148,12 @@ async function startSSE(): Promise<void> {
   while (true) {
     if (attempt > 0) {
       const delay = Math.min(BASE_DELAY_MS * Math.pow(2, attempt - 1), MAX_DELAY_MS);
-      console.log(`SSE: retry ${attempt} in ${delay / 1000}s...`);
+      sseLog.info('Waiting before reconnecting', { attempt, delayMs: delay });
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
     attempt++;
-    console.log(`SSE: connecting to ${url} (attempt ${attempt})`);
+    sseLog.info('Connecting', { url, attempt });
 
     const controller = new AbortController();
     // Abort if the server accepts the TCP connection but never sends HTTP headers
@@ -139,7 +162,7 @@ async function startSSE(): Promise<void> {
     const armIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        console.error(`SSE: no data for ${IDLE_TIMEOUT_MS / 1000}s, dropping stale connection`);
+        sseLog.error('No data received, dropping stale connection', { idleTimeoutMs: IDLE_TIMEOUT_MS });
         controller.abort();
       }, IDLE_TIMEOUT_MS);
     };
@@ -159,9 +182,9 @@ async function startSSE(): Promise<void> {
       clearTimeout(connectTimeout); // headers received — connection established
 
       if (!response.ok || !response.body) {
-        console.error(`SSE connection failed: ${response.status} ${response.statusText}`);
+        sseLog.error('Connection failed', { status: response.status, statusText: response.statusText });
       } else {
-        console.log('SSE connected successfully');
+        sseLog.info('Connected');
         attempt = 0; // reset backoff counter on successful connection
 
         const reader = response.body.getReader();
@@ -185,7 +208,7 @@ async function startSSE(): Promise<void> {
 
             // Guard against unbounded buffer growth from malformed events
             if (buffer.length > MAX_BUFFER_SIZE) {
-              console.error('SSE: buffer exceeded limit (malformed event?), resetting connection');
+              sseLog.error('Buffer exceeded limit (malformed event?), resetting connection', { maxBufferSize: MAX_BUFFER_SIZE });
               controller.abort();
               break;
             }
@@ -227,11 +250,11 @@ async function startSSE(): Promise<void> {
           reader.cancel().catch(() => {});
         }
 
-        console.log('SSE connection closed, will reconnect');
+        sseLog.warn('Connection closed, will reconnect');
       }
     } catch (err) {
       clearTimeout(connectTimeout);
-      console.error('SSE: connection error:', err);
+      sseLog.error('Connection error', { err });
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
     }
@@ -252,19 +275,20 @@ async function fetchPrinters(): Promise<Printer[]> {
     const list: Printer[] = (resp.data as any[]).map(Printer.fromJson);
     return list;
   } catch (err: any) {
-    console.error('Fetching printers failed:', err.message);
+    printersLog.error('Fetching printers failed', { err });
     return [];
   }
 }
 
 /**
  * Initialize by fetching printers. The data
- * is stored in module‑level variables and logged to console.
+ * is stored in module‑level variables and logged.
  */
 async function initialize(): Promise<void> {
   // Initial fetch
   printers = await fetchPrinters();
-  console.log('Initialization complete. Printers:', JSON.stringify(printers, null, 2));
+  log.info('Initialization complete', { printerCount: printers.length });
+  printersLog.debug('Printers loaded', { printers });
   runPrinterStatusCheck();
 
   // Cash registers (with their default printer) are cached and refreshed
@@ -280,17 +304,17 @@ async function initialize(): Promise<void> {
     isUpdatingPrinters = true;
     try {
       printers = await fetchPrinters();
-      console.log('Printers updated via polling.');
+      printersLog.debug('Printers updated via polling', { printerCount: printers.length });
       await runPrinterStatusCheck();
     } catch (e) {
-      console.error('Failed to update printers:', e);
+      printersLog.error('Failed to update printers', { err: e });
     } finally {
       isUpdatingPrinters = false;
     }
   }, 120000);
 
   startSSE().catch((err) => {
-    console.error('Error starting SSE listener:', err);
+    sseLog.error('Error starting SSE listener', { err });
   });
 }
 
@@ -366,7 +390,7 @@ function probePrinterStatusOnce(ip: string, port: number, timeoutMs = 3000): Pro
  */
 async function runPrinterStatusCheck(): Promise<void> {
   if (printers.length === 0) return;
-  console.log(`Printer status check: probing ${printers.length} printer(s)...`);
+  printersLog.debug('Status check started', { printerCount: printers.length });
   for (const printer of printers) {
     const primaryIp = resolveEffectiveIp(printer.ip, printer.mac) ?? printer.ip;
     let probed = await probePrinterStatusOnce(primaryIp, printer.port);
@@ -376,34 +400,34 @@ async function runPrinterStatusCheck(): Promise<void> {
     if (probed === 'OFFLINE' && printer.mac && printer.ip) {
       const macIp = resolveIpFromMac(printer.mac);
       if (macIp && macIp !== primaryIp) {
-        console.log(`Printer "${printer.name}": IP ${primaryIp} offline, retrying with MAC-resolved IP ${macIp}`);
+        printersLog.info('IP offline, retrying with MAC-resolved IP', { printerId: printer.id, printerName: printer.name, ip: primaryIp, macIp });
         probed = await probePrinterStatusOnce(macIp, printer.port);
         if (probed !== 'OFFLINE') {
           // IP changed — update DB and in-memory record
-          console.log(`Printer "${printer.name}": IP updated ${printer.ip} → ${macIp}`);
+          printersLog.info('Printer IP updated', { printerId: printer.id, printerName: printer.name, previousIp: printer.ip, ip: macIp });
           printer.ip = macIp;
           await patchPrinterIp(printer.id, macIp);
         }
       }
     }
 
-    const addr = printer.mac ? `MAC:${printer.mac} (${printer.ip})` : `${printer.ip}:${printer.port}`;
+    const context = { printerId: printer.id, printerName: printer.name, ip: printer.ip, port: printer.port, mac: printer.mac };
     if (probed === 'ERROR') {
-      console.log(`Printer "${printer.name}" (${addr}): paper out → ERROR`);
+      printersLog.warn('Printer out of paper', { ...context, status: 'ERROR' });
       printer.status = 'ERROR';
       await patchPrinterStatus(printer.id, 'ERROR');
     } else if (probed !== printer.status) {
-      console.log(`Printer "${printer.name}" (${addr}): ${printer.status} → ${probed}`);
+      printersLog.log(probed === 'OFFLINE' ? 'warn' : 'info', 'Printer status changed', { ...context, previousStatus: printer.status, status: probed });
       printer.status = probed;
       await patchPrinterStatus(printer.id, probed);
     } else {
-      console.log(`Printer "${printer.name}" (${addr}): ${probed} (no change)`);
+      printersLog.debug('Printer status unchanged', { ...context, status: probed });
     }
   }
 }
 
 // Kick off initialization asynchronously. Errors are logged.
-initialize().catch((err) => console.error('Initialization error:', err));
+initialize().catch((err) => log.error('Initialization error', { err }));
 
 // Load saved config from config.json to populate env for print handler
 const CONFIG_FILE = path.join(process.cwd(), 'data', 'config.json');
@@ -412,23 +436,23 @@ try {
     const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     if (savedConfig.singleTicketCategories) {
       process.env.SINGLE_TICKET_CATEGORIES = savedConfig.singleTicketCategories.join(',');
-      console.log('Loaded single ticket categories from config.json');
+      configLog.info('Loaded single ticket categories from config.json', { count: savedConfig.singleTicketCategories.length });
     }
     if (savedConfig.stationTicketsEnabled !== undefined) {
       process.env.STATION_TICKETS_ENABLED = savedConfig.stationTicketsEnabled ? 'true' : 'false';
-      console.log('Loaded stationTicketsEnabled from config.json:', savedConfig.stationTicketsEnabled);
+      configLog.info('Loaded stationTicketsEnabled from config.json', { stationTicketsEnabled: savedConfig.stationTicketsEnabled });
     }
     if (savedConfig.excludedFoodIds) {
       process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
-      console.log('Loaded excludedFoodIds from config.json');
+      configLog.info('Loaded excludedFoodIds from config.json', { count: savedConfig.excludedFoodIds.length });
     }
     if (savedConfig.singleTicketNotesEnabled !== undefined) {
       process.env.SINGLE_TICKET_NOTES_ENABLED = savedConfig.singleTicketNotesEnabled ? 'true' : 'false';
-      console.log('Loaded singleTicketNotesEnabled from config.json:', savedConfig.singleTicketNotesEnabled);
+      configLog.info('Loaded singleTicketNotesEnabled from config.json', { singleTicketNotesEnabled: savedConfig.singleTicketNotesEnabled });
     }
   }
 } catch (e) {
-  console.error('Failed to load config.json on startup:', e);
+  configLog.error('Failed to load config.json on startup', { err: e });
 }
 
 // Configure Express
@@ -589,7 +613,7 @@ async function readConfig(): Promise<AppConfig> {
     };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      console.error('Failed to read config file:', e);
+      configLog.error('Failed to read config file', { err: e });
     }
   }
   return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [], singleTicketNotesEnabled: false };
@@ -622,7 +646,7 @@ app.get('/api/categories', async (req: Request, res: Response) => {
     });
     return res.json(resp.data);
   } catch (err: any) {
-    console.error('Failed to fetch categories:', err.message);
+    log.error('Failed to fetch categories', { err });
     return res.status(502).json({ error: 'Failed to fetch categories' });
   }
 });
@@ -673,7 +697,7 @@ app.post('/api/config', async (req: Request, res: Response) => {
   try {
     await writeConfig(config);
   } catch (e) {
-    console.error('Failed to write config:', e);
+    configLog.error('Failed to write config', { err: e });
     return res.status(500).json({ error: 'Failed to save config' });
   }
   return res.json({ ok: true, config });
@@ -690,5 +714,5 @@ app.post('/logout', (_req: Request, res: Response) => {
 
 // Start listening
 app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+  log.info('Server listening', { port: PORT });
 });
