@@ -24,11 +24,15 @@ import path from 'path';
 import iconv from 'iconv-lite';
 import { IncomingOrder } from '../models';
 import { loadImageAsEscPos } from './image';
+import { getReceiptLogo, getSettings } from './settingsCache';
 import { createLogger } from './logger';
 
 const log = createLogger('printer');
 
-const SHOW_NUMBERS = process.env.SHOW_NUMBERS === 'true';
+/** settings.tickets.showNumbers from the backend: true prints the ticket number, false the order code. */
+function showNumbers(): boolean {
+  return getSettings()?.settings?.tickets?.showNumbers === true;
+}
 
 /**
  * Types representing individual lines that will appear on receipts.
@@ -196,7 +200,7 @@ export function buildKitchenReceipt(
   out.push("");
 
   let topInfo = `PROGR: ${progress}`;
-  if (SHOW_NUMBERS) {
+  if (showNumbers()) {
     if (order.ticketNumber != null) topInfo = `N°: ${order.ticketNumber} - ${topInfo}`;
   } else {
     if (codeStr(order.displayCode)) topInfo = `COD: ${codeStr(order.displayCode)} - ${topInfo}`;
@@ -246,7 +250,7 @@ export function buildKitchenReceipt(
     }
   }
 
-  if (SHOW_NUMBERS) {
+  if (showNumbers()) {
     if (order.ticketNumber != null)
       out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
     if (codeStr(order.displayCode))
@@ -351,7 +355,7 @@ export async function buildCashReceipt(
   const BOLD_ON = ESC + "E" + "\x01";
   const BOLD_OFF = ESC + "E" + "\x00";
   
-  if (SHOW_NUMBERS) {
+  if (showNumbers()) {
     if (order.ticketNumber != null)
       out.push(TXT_BIG + BOLD_ON + `N° ORDINE: ${order.ticketNumber}` + BOLD_OFF + TXT_NORMAL);
     if (codeStr(order.displayCode))
@@ -451,37 +455,26 @@ export async function buildCashReceipt(
   out.push(lr("TOTALE", eurCol(totalAfterDiscount)));
   out.push(line("="));
 
-  // Check for logo
-  const possibleLogos = ['logo.png', 'logo.jpg', 'logo.jpeg'];
-  for (const lo of possibleLogos) {
-    let logoPath = path.join(process.cwd(), 'assets', lo);
-    if (!fs.existsSync(logoPath)) {
-      logoPath = path.join(process.cwd(), 'default-assets', lo);
-    }
-
-    if (fs.existsSync(logoPath)) {
-      const logoBuf = await loadImageAsEscPos(logoPath, {
+  // Receipt logo configured on the backend (sagra.receiptLogo); when the sagra
+  // has none (or it can't be downloaded) the bundled MySagra logo is used.
+  let logoBuf = await getReceiptLogo();
+  if (!logoBuf) {
+    const defaultLogoPath = path.join(process.cwd(), 'resources', 'mysagralogo.png');
+    if (fs.existsSync(defaultLogoPath)) {
+      logoBuf = await loadImageAsEscPos(defaultLogoPath, {
         paperWidth: 576, // 80mm paper requires 576 dots width for centering
-        exactWidth: 210 // 30% smaller than 300
+        exactWidth: 210,
       });
-      if (logoBuf.length > 0) {
-        parts.push(logoBuf);
-      } else {
-        log.warn('Logo returned empty buffer, skipping', { path: logoPath });
-      }
-      break;
     }
   }
+  if (logoBuf && logoBuf.length > 0) parts.push(logoBuf);
 
   // Push the main text with padding above to separate from the logo
   // And an extra \n at the end to add a blank line before the footer
   parts.push("\n\n\n" + out.join("\n") + "\n\n");
 
-  // FOOTER (mysagra logo + mysagra.com)
-  let mysagraPath = path.join(process.cwd(), 'assets', 'mysagralogo.png');
-  if (!fs.existsSync(mysagraPath)) {
-    mysagraPath = path.join(process.cwd(), 'default-assets', 'mysagralogo.png');
-  }
+  // FOOTER (mysagra logo + mysagra.com), bundled with the service
+  const mysagraPath = path.join(process.cwd(), 'resources', 'mysagralogo.png');
 
   let mysagraFooterBuf: Buffer | null = null;
   if (fs.existsSync(mysagraPath)) {
@@ -527,7 +520,7 @@ export async function buildCashReceipt(
       }
 
       let subTitle = "";
-      if (SHOW_NUMBERS) {
+      if (showNumbers()) {
         if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
         if (codeStr(order.displayCode)) {
           if (subTitle) subTitle += ` - `;
@@ -570,8 +563,8 @@ export async function buildCashReceipt(
     for (const station of stationTickets) {
       parts.push(FEED_AND_CUT2);
 
-      // Identificatore ordine grande (numero o codice in base a SHOW_NUMBERS)
-      const orderIdLabel = SHOW_NUMBERS
+      // Identificatore ordine grande (numero o codice in base a tickets.showNumbers)
+      const orderIdLabel = showNumbers()
         ? (order.ticketNumber != null ? `N° ${order.ticketNumber}` : codeStr(order.displayCode))
         : (codeStr(order.displayCode) || (order.ticketNumber != null ? `N° ${order.ticketNumber}` : ''));
 
@@ -583,7 +576,7 @@ export async function buildCashReceipt(
 
       // Riga secondaria: info complementare + cliente
       let subTitle = "";
-      if (SHOW_NUMBERS) {
+      if (showNumbers()) {
         if (codeStr(order.displayCode)) subTitle += `COD: ${wideCode(order.displayCode)}`;
       } else {
         if (order.ticketNumber != null) subTitle += `N°: ${order.ticketNumber}`;
@@ -811,16 +804,16 @@ export function buildCancellationReceipt(
   const line = (ch = "-") => repeat(ch, RECEIPT_W);
   const cut = (s: string, w: number) => (s.length <= w ? s : s.slice(0, w));
 
-  const identifier = SHOW_NUMBERS
+  const identifier = showNumbers()
     ? (ticketNumber != null ? `N° ${ticketNumber}` : codeStr(displayCode))
     : codeStr(displayCode);
 
   out.push("");
   out.push(line("="));
   out.push(TXT_BIG + BOLD_ON + "ORDINE ANNULLATO: " + identifier + BOLD_OFF + TXT_NORMAL);
-  if (SHOW_NUMBERS && codeStr(displayCode)) {
+  if (showNumbers() && codeStr(displayCode)) {
     out.push(TXT_MEDIUM + cut(`CODICE: ${wideCode(displayCode, 0x01)}`, RECEIPT_W) + TXT_NORMAL);
-  } else if (!SHOW_NUMBERS && ticketNumber != null) {
+  } else if (!showNumbers() && ticketNumber != null) {
     out.push(TXT_MEDIUM + `N°: ${ticketNumber}` + TXT_NORMAL);
   }
   out.push(line("="));

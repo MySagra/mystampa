@@ -22,6 +22,7 @@ import { handleGeneralClosure } from './routes/closure';
 import { resolveEffectiveIp, resolveIpFromMac } from './utils/arp';
 import { patchPrinterIp, patchPrinterStatus } from './utils/api';
 import { fetchAndCacheCashRegisters } from './utils/cashRegistersCache';
+import { fetchAndCacheSettings, applySettings } from './utils/settingsCache';
 
 const log = createLogger('app');
 const sseLog = createLogger('sse');
@@ -110,6 +111,8 @@ async function dispatchSSEEvent(eventType: string, eventData: string): Promise<v
       } else {
         sseLog.error('General closure failed', { eventType, cashRegisterId: payload.cashRegister, error: result.error });
       }
+    } else if (eventType === 'settings-update') {
+      applySettings(payload);
     } else if (eventType === 'open-drawer') {
       const result = await handleOpenDrawer(payload, printers);
       if (result.ok) {
@@ -186,6 +189,8 @@ async function startSSE(): Promise<void> {
       } else {
         sseLog.info('Connected');
         attempt = 0; // reset backoff counter on successful connection
+        // A settings-update may have been missed while disconnected
+        fetchAndCacheSettings().catch(() => {});
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -295,6 +300,10 @@ async function initialize(): Promise<void> {
   // every 5 minutes, so orders don't need a lookup each.
   await fetchAndCacheCashRegisters();
   setInterval(fetchAndCacheCashRegisters, 5 * 60 * 1000);
+
+  // Settings (receipt logo, ...) are loaded once here and then kept up to
+  // date by the `settings-update` SSE event; also re-fetched on SSE reconnect.
+  await fetchAndCacheSettings();
 
   // Refresh printers every 2 minutes (120000 ms).
   // Guard flag prevents concurrent executions if a cycle takes longer than the interval.
@@ -462,8 +471,6 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // Serve static files
-const assetsDir = path.join(process.cwd(), 'assets');
-app.use('/assets', express.static(assetsDir));
 const publicDir = path.join(process.cwd(), 'public');
 app.use('/public', express.static(publicDir));
 

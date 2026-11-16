@@ -11,17 +11,17 @@ export interface ImageOptions {
 }
 
 /**
- * Converts an image file to an ESC/POS raster image Buffer.
+ * Converts an image (file path or raw bytes) to an ESC/POS raster image Buffer.
  * Supports resizing and dithering/thresholding to black and white.
  * Max width is typically 384 (58mm) or 576 (80mm).
  * Returns an empty buffer if the file cannot be loaded.
  */
 export async function loadImageAsEscPos(
-    filePath: string,
+    source: string | Buffer,
     options: ImageOptions = {}
 ): Promise<Buffer> {
     try {
-        const img = await Jimp.read(filePath);
+        const img = await (typeof source === 'string' ? Jimp.read(source) : Jimp.read(source));
 
         // Automatically crop any solid transparent/white margins from the source image
         img.autocrop();
@@ -107,7 +107,7 @@ export async function loadImageAsEscPos(
         // Return header + data
         return Buffer.concat([header, data]);
     } catch (err) {
-        log.error('Failed to process image', { filePath, err });
+        log.error('Failed to process image', { source: typeof source === 'string' ? source : `buffer(${source.length} bytes)`, err });
         return Buffer.alloc(0);
     }
 }

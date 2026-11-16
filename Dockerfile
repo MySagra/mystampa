@@ -42,9 +42,8 @@ COPY --from=builder /app/src/views ./src/views
 # Copy public static files
 COPY --from=builder /app/public ./public
 
-# Copy assets and default-assets fallback
-COPY --from=builder /app/assets ./assets
-COPY --from=builder /app/assets ./default-assets
+# Copy bundled print resources (MySagra receipt footer)
+COPY --from=builder /app/resources ./resources
 
 RUN apk add --no-cache tzdata
 RUN mkdir -p data logs && chown -R expressjs:nodejs data logs

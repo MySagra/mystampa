@@ -13,7 +13,6 @@ services:
     environment:
       - NODE_ENV=production
     volumes:
-      - ./assets:/app/assets
       - mystampa_config:/app/data
       - mystampa_logs:/app/logs
     # stdout is also kept by Docker: without a cap it grows without limit

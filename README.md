@@ -32,11 +32,11 @@ A lightweight web UI is included for configuration — managing single-ticket ca
 ## Features
 
 ### Automated Print Service
-- **SSE-based order reception** — connects to the backend and listens for `confirmed-order` and `reprint-order` events
+- **SSE-based order reception** — connects to the backend and listens for `confirmed-order` and `reprint-order` events (plus `settings-update` for live settings changes)
 - **Kitchen receipts** — routes order items to the correct kitchen printer based on food configuration
 - **Cash receipts** — prints fiscal receipts with itemized totals, discounts, surcharges and payment method
 - **Single tickets** — prints individual cut tickets for configurable item categories
-- **Logo support** — prints a custom logo and MySagra footer on cash receipts (ESC/POS raster graphics)
+- **Logo support** — prints the sagra logo configured on the backend and the MySagra footer on cash receipts (ESC/POS raster graphics)
 - **Print queue** — failed jobs are queued and retried automatically every 60 seconds
 
 ### Printer Monitoring
@@ -65,10 +65,11 @@ MySagra Backend
       └──► Cash Register Printer  (TCP ESC/POS)
 ```
 
-1. On startup MyStampa fetches the printer list from the backend using the API key.
+1. On startup MyStampa fetches the printer list and the settings (`/v1/settings`) from the backend using the API key.
 2. It connects to the SSE endpoint at `API_URL/events/printer` and keeps the connection alive.
 3. When a `confirmed-order` or `reprint-order` event arrives, it fetches food and cash register details from the backend, builds the receipts and sends them to the appropriate printers over TCP.
-4. Every 2 minutes it probes all printers and PATCHes any status changes to the backend.
+4. When a `settings-update` event arrives, it replaces the cached settings (e.g. a new receipt logo).
+5. Every 2 minutes it probes all printers and PATCHes any status changes to the backend.
 
 **Authentication is split into two independent layers:**
 - **Automated service** → `X-API-KEY` header on all backend API calls
@@ -148,50 +149,26 @@ The named volume `mystampa_config` is used to persist the configuration (single-
 
 ---
 
-## Custom Receipt Logo
+## Receipt Logo
 
-Every fiscal receipt prints a logo at the top. By default the **MySagra logo** (baked into the Docker image) is used. You can replace it with your own without rebuilding the image.
+Every fiscal receipt prints the sagra logo at the top. The logo is **configured centrally on the MySagra backend** (sagra settings → receipt logo): there is nothing to copy into MyStampa or into the Docker container.
 
 ### How it works
 
-The service looks for the logo in this order:
+1. At startup MyStampa calls `GET API_URL/v1/settings` and reads `sagra.receiptLogo` (e.g. `/uploads/receipt_logo/receipt-logo-….png`).
+2. The image is downloaded from `API_URL` + `receiptLogo`, converted to ESC/POS raster graphics once and kept in memory.
+3. When the settings change, the backend sends a `settings-update` SSE event: MyStampa applies it immediately and downloads the new logo, **no restart required**. Settings are also re-fetched on every SSE reconnection, so a change made while the service was offline is not missed.
 
-1. `assets/logo.png` (or `.jpg` / `.jpeg`) — your custom logo, provided at runtime
-2. `default-assets/logo.png` — the MySagra fallback, always present inside the image
-
-### Local development
-
-Place your logo file in the `assets/` folder at the project root:
-
-```
-assets/
-└── logo.png   ← your custom logo (PNG, JPG or JPEG)
-```
-
-Restart the service and the new logo will appear on the next receipt.
-
-### Docker (recommended)
-
-The `docker-compose.yml` already mounts `./assets` as a volume:
-
-```yaml
-volumes:
-  - ./assets:/app/assets
-```
-
-Simply drop your `logo.png` into the `./assets/` folder on the host — **no rebuild required**:
-
-```bash
-cp /path/to/your/logo.png ./assets/logo.png
-docker-compose restart mystampa
-```
-
-If `./assets/logo.png` is absent, the container automatically falls back to the MySagra default logo stored in `default-assets/` inside the image.
+If the sagra has no logo configured (or it cannot be downloaded), the **MySagra logo** bundled with the service (`resources/mysagralogo.png`) is printed instead. The same image is also used for the MySagra footer, which is always printed.
 
 > **Tips for best results:**
 > - Use a square or landscape image, ideally **300–600 px wide**
 > - Black-and-white or high-contrast images print best on thermal paper
-> - Supported formats: `logo.png`, `logo.jpg`, `logo.jpeg`
+> - Supported formats: PNG, JPG/JPEG
+
+### Ticket number or order code
+
+Whether receipts show the ticket number (`N° ORDINE`) or the order code is also read from the backend settings: `settings.tickets.showNumbers` (`true` → ticket number, `false` → order code). It follows `settings-update` events like the logo; until the settings are loaded the order code is used. The old `SHOW_NUMBERS` environment variable is no longer read.
 
 ---
 
@@ -240,12 +217,13 @@ mystampa/
 │   │   ├── printer.ts        # ESC/POS receipt builder and TCP send
 │   │   ├── printQueue.ts     # Failed-job queue with periodic retry
 │   │   ├── image.ts          # Logo rasterization for ESC/POS
+│   │   ├── settingsCache.ts  # Backend settings (/v1/settings + settings-update) and receipt logo
 │   │   └── logger.ts         # Structured logging, daily files, 7-day retention
 │   └── views/
 │       ├── login.ejs         # Web UI login page
 │       └── config.ejs        # Web UI configuration page
 ├── public/                   # Static files (favicon, banner, login-bg, logo.svg)
-├── assets/                   # Print assets (logo.png, mysagralogo.png)
+├── resources/                # Bundled print resources (mysagralogo.png footer)
 ├── Dockerfile
 ├── docker-compose.yml
 └── .env.example
