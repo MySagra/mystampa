@@ -447,10 +447,6 @@ try {
       process.env.SINGLE_TICKET_CATEGORIES = savedConfig.singleTicketCategories.join(',');
       configLog.info('Loaded single ticket categories from config.json', { count: savedConfig.singleTicketCategories.length });
     }
-    if (savedConfig.stationTicketsEnabled !== undefined) {
-      process.env.STATION_TICKETS_ENABLED = savedConfig.stationTicketsEnabled ? 'true' : 'false';
-      configLog.info('Loaded stationTicketsEnabled from config.json', { stationTicketsEnabled: savedConfig.stationTicketsEnabled });
-    }
     if (savedConfig.excludedFoodIds) {
       process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
       configLog.info('Loaded excludedFoodIds from config.json', { count: savedConfig.excludedFoodIds.length });
@@ -602,7 +598,6 @@ app.get('/config', (req: Request, res: Response) => {
  */
 interface AppConfig {
   singleTicketCategories: string[];
-  stationTicketsEnabled: boolean;
   excludedFoodIds: string[];
   singleTicketNotesEnabled: boolean;
 }
@@ -614,7 +609,6 @@ async function readConfig(): Promise<AppConfig> {
     const parsed = JSON.parse(raw);
     return {
       singleTicketCategories: parsed.singleTicketCategories ?? [],
-      stationTicketsEnabled: parsed.stationTicketsEnabled ?? false,
       excludedFoodIds: parsed.excludedFoodIds ?? [],
       singleTicketNotesEnabled: parsed.singleTicketNotesEnabled ?? false,
     };
@@ -623,14 +617,13 @@ async function readConfig(): Promise<AppConfig> {
       configLog.error('Failed to read config file', { err: e });
     }
   }
-  return { singleTicketCategories: [], stationTicketsEnabled: false, excludedFoodIds: [], singleTicketNotesEnabled: false };
+  return { singleTicketCategories: [], excludedFoodIds: [], singleTicketNotesEnabled: false };
 }
 
 async function writeConfig(config: AppConfig): Promise<void> {
   await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
   await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
   process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
-  process.env.STATION_TICKETS_ENABLED = config.stationTicketsEnabled ? 'true' : 'false';
   process.env.EXCLUDED_FOOD_IDS = config.excludedFoodIds.join(',');
   process.env.SINGLE_TICKET_NOTES_ENABLED = config.singleTicketNotesEnabled ? 'true' : 'false';
 }
@@ -690,14 +683,13 @@ app.get('/api/config', async (req: Request, res: Response) => {
 app.post('/api/config', async (req: Request, res: Response) => {
   if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
   if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories, stationTicketsEnabled, excludedFoodIds, singleTicketNotesEnabled } = req.body;
+  const { singleTicketCategories, excludedFoodIds, singleTicketNotesEnabled } = req.body;
   if (!Array.isArray(singleTicketCategories)) {
     return res.status(400).json({ error: 'singleTicketCategories must be an array' });
   }
   const current = await readConfig();
   const config: AppConfig = {
     singleTicketCategories,
-    stationTicketsEnabled: stationTicketsEnabled !== undefined ? Boolean(stationTicketsEnabled) : current.stationTicketsEnabled,
     excludedFoodIds: Array.isArray(excludedFoodIds) ? excludedFoodIds : current.excludedFoodIds,
     singleTicketNotesEnabled: singleTicketNotesEnabled !== undefined ? Boolean(singleTicketNotesEnabled) : current.singleTicketNotesEnabled,
   };

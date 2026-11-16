@@ -30,6 +30,7 @@ import {
 import { resolveEffectiveIp, resolveIpFromMac } from "../utils/arp";
 import { patchPrinterIp, patchPrinterStatus } from "../utils/api";
 import { createLogger, errorMessage } from "../utils/logger";
+import { getSettings } from "../utils/settingsCache";
 
 const log = createLogger("print.safePrint");
 const printLog = createLogger("print");
@@ -186,7 +187,8 @@ export async function handlePrintOrder(
     ? excludedFoodIdsEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
     : [];
 
-  const stationTicketsEnabled = process.env.STATION_TICKETS_ENABLED === 'true';
+  // Pickup ticket per station, from the backend settings (stations.pickupTickets)
+  const stationTicketsEnabled = getSettings()?.settings?.stations?.pickupTickets === true;
   const singleTicketNotesEnabled = process.env.SINGLE_TICKET_NOTES_ENABLED === 'true';
 
   // Determine which items go to kitchen printers.

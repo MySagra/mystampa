@@ -174,6 +174,10 @@ Whether receipts show the ticket number (`N° ORDINE`) or the order code is also
 
 Amounts on receipts and closure reports use the currency from `settings.general.currency`, also updated by `settings-update`. The symbols match the admin panel: `€` (EUR), `£` (GBP), `CA$` (CAD), `A$` (AUD); the other currencies (CHF, USD, SEK, NOK, DKK, PLN, CZK, HUF, RON, BGN) are printed by code, e.g. `12,34 CHF`. HUF has no decimals. Until the settings are loaded, `EUR` is used.
 
+### Pickup tickets per station
+
+Whether a pickup ticket (`RITIRA A: …`) is printed for each station along with the receipt is read from `settings.stations.pickupTickets`, also updated by `settings-update`. It replaces the old toggle in the MyStampa web UI, which has been removed (an old `stationTicketsEnabled` in `data/config.json` is ignored). Until the settings are loaded, no pickup tickets are printed.
+
 ---
 
 ## Configuration
