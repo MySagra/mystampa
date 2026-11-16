@@ -170,6 +170,10 @@ If the sagra has no logo configured (or it cannot be downloaded), the **MySagra 
 
 Whether receipts show the ticket number (`N° ORDINE`) or the order code is also read from the backend settings: `settings.tickets.showNumbers` (`true` → ticket number, `false` → order code). It follows `settings-update` events like the logo; until the settings are loaded the order code is used. The old `SHOW_NUMBERS` environment variable is no longer read.
 
+### Currency
+
+Amounts on receipts and closure reports use the currency from `settings.general.currency`, also updated by `settings-update`. The symbols match the admin panel: `€` (EUR), `£` (GBP), `CA$` (CAD), `A$` (AUD); the other currencies (CHF, USD, SEK, NOK, DKK, PLN, CZK, HUF, RON, BGN) are printed by code, e.g. `12,34 CHF`. HUF has no decimals. Until the settings are loaded, `EUR` is used.
+
 ---
 
 ## Configuration

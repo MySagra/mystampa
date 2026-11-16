@@ -39,7 +39,7 @@ export function applySettings(next: AppSettings): void {
   const prevLogo = current?.sagra?.receiptLogo ?? null;
   current = next;
   const nextLogo = next?.sagra?.receiptLogo ?? null;
-  log.info('Settings applied', { sagra: next?.sagra?.name, receiptLogo: nextLogo, showNumbers: next?.settings?.tickets?.showNumbers, updatedAt: next?.updatedAt });
+  log.info('Settings applied', { sagra: next?.sagra?.name, receiptLogo: nextLogo, showNumbers: next?.settings?.tickets?.showNumbers, currency: next?.settings?.general?.currency, updatedAt: next?.updatedAt });
   if (nextLogo !== prevLogo) {
     // Warm the cache so the next receipt doesn't wait for the download
     getReceiptLogo().catch(() => {});

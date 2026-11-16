@@ -114,10 +114,49 @@ function toNumber(v: any): number {
 }
 
 /**
- * Format a number into a euro currency string with two decimals.
+ * Currency from the backend settings (settings.general.currency, ISO 4217).
+ * Defaults to EUR until the settings are loaded.
  */
-function eur(n: number): string {
-  return `€${n.toFixed(2)}`;
+function currencyCode(): string {
+  const c = String(getSettings()?.settings?.general?.currency ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) ? c : 'EUR';
+}
+
+/**
+ * Currencies selectable in the admin panel, with the same symbols it shows
+ * (all printable in CP858). Currencies without a symbol are printed by code.
+ */
+const CURRENCIES: Record<string, { symbol: string; decimals: number }> = {
+  EUR: { symbol: '€', decimals: 2 },
+  CHF: { symbol: 'CHF', decimals: 2 },
+  GBP: { symbol: '£', decimals: 2 },
+  USD: { symbol: 'USD', decimals: 2 },
+  CAD: { symbol: 'CA$', decimals: 2 },
+  AUD: { symbol: 'A$', decimals: 2 },
+  SEK: { symbol: 'SEK', decimals: 2 },
+  NOK: { symbol: 'NOK', decimals: 2 },
+  DKK: { symbol: 'DKK', decimals: 2 },
+  PLN: { symbol: 'PLN', decimals: 2 },
+  CZK: { symbol: 'CZK', decimals: 2 },
+  HUF: { symbol: 'HUF', decimals: 0 },
+  RON: { symbol: 'RON', decimals: 2 },
+  BGN: { symbol: 'BGN', decimals: 2 },
+};
+
+function currencyInfo(code: string): { symbol: string; decimals: number } {
+  return CURRENCIES[code] ?? { symbol: code, decimals: 2 };
+}
+
+/**
+ * Format an amount in the configured currency with a decimal comma.
+ * `suffix`: 12,34€ / 12,34 CA$ / 12,34 CHF (receipt columns); `prefix`: €12,34 / CHF 12,34.
+ */
+function formatMoney(n: number, position: 'prefix' | 'suffix'): string {
+  const { symbol, decimals } = currencyInfo(currencyCode());
+  const v = Number.isFinite(n) ? n : 0;
+  const amount = v.toFixed(decimals).replace('.', ',');
+  const sep = symbol.length > 1 ? ' ' : '';
+  return position === 'suffix' ? `${amount}${sep}${symbol}` : `${symbol}${sep}${amount}`;
 }
 
 /**
@@ -338,12 +377,8 @@ export async function buildCashReceipt(
     return padRight(leftCut, Math.max(0, leftW)) + repeat(" ", space) + right;
   };
 
-  // Formato valuta: 12,34€ (compatta, buona per colonna)
-  const eurCol = (n: number) => {
-    const v = Number.isFinite(n) ? n : 0;
-    const s = v.toFixed(2).replace(".", ",");
-    return `${s}€`;
-  };
+  // Formato valuta: 12,34€ (compatta, buona per colonna), valuta dalle settings
+  const moneyCol = (n: number) => formatMoney(n, 'suffix');
 
   // =========================
   // HEADER
@@ -407,7 +442,7 @@ export async function buildCashReceipt(
     // Riga principale con totale riga
     // Wrappiamo il testo di sinistra in modo da evitare che sovrascriva spazi 
     // Risolviamo il prezzo a destra sempre sulla prima riga
-    const priceStr = eurCol(rowTotal);
+    const priceStr = moneyCol(rowTotal);
     const availableWidthForName = RECEIPT_W - priceStr.length - 1; // 1 per lo spazio minimo
 
     const namePrefix = `${qty}x `;
@@ -432,7 +467,7 @@ export async function buildCashReceipt(
     }
 
     if (rowExtra > 0) {
-      out.push(lr(`${indent}EXTRA`, eurCol(rowExtra)));
+      out.push(lr(`${indent}EXTRA`, moneyCol(rowExtra)));
     }
 
     out.push("");
@@ -447,12 +482,12 @@ export async function buildCashReceipt(
   const totalBase = subtotalCalc + surchargeSum;
   const totalAfterDiscount = Math.max(0, totalBase - discount);
 
-  out.push(lr("SUBTOTALE", eurCol(subtotalCalc)));
-  if (surchargeSum > 0) out.push(lr("EXTRA TOTALI", eurCol(surchargeSum)));
-  if (discount > 0) out.push(lr("SCONTO", `-${eurCol(discount)}`));
+  out.push(lr("SUBTOTALE", moneyCol(subtotalCalc)));
+  if (surchargeSum > 0) out.push(lr("EXTRA TOTALI", moneyCol(surchargeSum)));
+  if (discount > 0) out.push(lr("SCONTO", `-${moneyCol(discount)}`));
 
   out.push(line("="));
-  out.push(lr("TOTALE", eurCol(totalAfterDiscount)));
+  out.push(lr("TOTALE", moneyCol(totalAfterDiscount)));
   out.push(line("="));
 
   // Receipt logo configured on the backend (sagra.receiptLogo); when the sagra
@@ -860,10 +895,8 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
   };
 
   // Report amounts arrive as strings: the backend serializes them from Decimal.
-  const eur = (value: unknown) => {
-    const n = toNumber(value);
-    const v = Number.isFinite(n) ? n : 0;
-    return `€${v.toFixed(2).replace(".", ",")}`;
+  const money = (value: unknown) => {
+    return formatMoney(toNumber(value), 'prefix');
   };
 
   const GS = "\x1D";
@@ -894,9 +927,9 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
   mainOut.push(line("-"));
 
   mainOut.push(lr("Totale Ordini:", String(report.totalOrders || 0)));
-  mainOut.push(lr("Incasso Totale:", eur(report.totalRevenue || 0)));
-  mainOut.push(lr("Incasso Contanti:", eur(report.totalCashRevenue || 0)));
-  mainOut.push(lr("Incasso Elettronico:", eur(report.totalCardRevenue || 0)));
+  mainOut.push(lr("Incasso Totale:", money(report.totalRevenue || 0)));
+  mainOut.push(lr("Incasso Contanti:", money(report.totalCashRevenue || 0)));
+  mainOut.push(lr("Incasso Elettronico:", money(report.totalCardRevenue || 0)));
 
   // Cash Register Stats
   if (report.cashRegisterStats && report.cashRegisterStats.length > 0) {
@@ -909,9 +942,9 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
       mainOut.push("");
       mainOut.push(BOLD_ON + cut(crStat.cashRegisterName || "Cassa", RECEIPT_W) + BOLD_OFF);
       mainOut.push(line("-"));
-      mainOut.push(lr("Totale:", eur(crStat.totalRevenue || 0)));
-      mainOut.push(lr("Contanti:", eur(crStat.totalCashRevenue || 0)));
-      mainOut.push(lr("Elettronico:", eur(crStat.totalCardRevenue || 0)));
+      mainOut.push(lr("Totale:", money(crStat.totalRevenue || 0)));
+      mainOut.push(lr("Contanti:", money(crStat.totalCashRevenue || 0)));
+      mainOut.push(lr("Elettronico:", money(crStat.totalCardRevenue || 0)));
     }
   }
 
@@ -923,7 +956,7 @@ export function buildGeneralClosureReport(reportData: any): (string | Buffer)[][
     mainOut.push(line("="));
 
     for (const catStat of report.categoryStats) {
-      mainOut.push(lr(cut((catStat.categoryName || "Categoria").toUpperCase(), RECEIPT_W - 10), eur(catStat.revenue || 0)));
+      mainOut.push(lr(cut((catStat.categoryName || "Categoria").toUpperCase(), RECEIPT_W - 10), money(catStat.revenue || 0)));
     }
   }
 
