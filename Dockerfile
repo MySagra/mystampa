@@ -46,7 +46,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/resources ./resources
 
 RUN apk add --no-cache tzdata
-RUN mkdir -p data logs && chown -R expressjs:nodejs data logs
+RUN mkdir -p logs && chown -R expressjs:nodejs logs
 
 USER expressjs
 
@@ -56,4 +56,4 @@ USER expressjs
 
 ENV HOSTNAME "0.0.0.0"
 
-CMD ["sh", "-c", "mkdir -p data && [ -f data/config.json ] || echo '{}' > data/config.json && node dist/index.js"]
+CMD ["node", "dist/index.js"]

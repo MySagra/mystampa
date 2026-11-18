@@ -25,7 +25,7 @@
 
 It also monitors the status of all configured printers (online, offline, paper out) and reports changes back to the backend in real time.
 
-A lightweight web UI is included for configuration — managing single-ticket categories and viewing live printer status.
+A lightweight web UI is included for viewing live printer status. All print settings come from the MySagra backend.
 
 ---
 
@@ -35,7 +35,7 @@ A lightweight web UI is included for configuration — managing single-ticket ca
 - **SSE-based order reception** — connects to the backend and listens for `confirmed-order` and `reprint-order` events (plus `settings-update` for live settings changes)
 - **Kitchen receipts** — routes order items to the correct kitchen printer based on food configuration
 - **Cash receipts** — prints fiscal receipts with itemized totals, discounts, surcharges and payment method
-- **Single tickets** — prints individual cut tickets for configurable item categories
+- **Single tickets** — prints an individual cut ticket for each food marked as separate ticket on the backend
 - **Logo support** — prints the sagra logo configured on the backend and the MySagra footer on cash receipts (ESC/POS raster graphics)
 - **Print queue** — failed jobs are queued and retried automatically every 60 seconds
 
@@ -46,7 +46,6 @@ A lightweight web UI is included for configuration — managing single-ticket ca
 
 ### Web UI
 - **Login** — authenticates against the MySagra backend using user credentials
-- **Category config** — select which item categories should print individual cut tickets
 - **Printer overview** — live list of all printers with their current status
 
 ---
@@ -145,7 +144,7 @@ The Dockerfile uses a multi-stage build:
 
 The container joins the `mysagra-network` external Docker network to reach the backend.
 
-The named volume `mystampa_config` is used to persist the configuration (single-ticket categories) across container restarts and image updates. It is created automatically by Docker on first run — no manual setup required.
+MyStampa keeps no local configuration: everything it prints comes from the backend (orders and `/v1/settings`), so no volume is needed for it. Older installs may still have a `mystampa_config` volume: it is no longer used and can be removed with `docker volume rm` (the name has the compose project prefix).
 
 ---
 
@@ -176,7 +175,11 @@ Amounts on receipts and closure reports use the currency from `settings.general.
 
 ### Pickup tickets per station
 
-Whether a pickup ticket (`RITIRA A: …`) is printed for each station along with the receipt is read from `settings.stations.pickupTickets`, also updated by `settings-update`. It replaces the old toggle in the MyStampa web UI, which has been removed (an old `stationTicketsEnabled` in `data/config.json` is ignored). Until the settings are loaded, no pickup tickets are printed.
+Whether a pickup ticket (`RITIRA A: …`) is printed for each station along with the receipt is read from `settings.stations.pickupTickets`, also updated by `settings-update`. It replaces the old toggle in the MyStampa web UI, which has been removed. Until the settings are loaded, no pickup tickets are printed.
+
+### Single tickets
+
+A food is printed on its own cut ticket (after the cash receipt) when it has `separateTicket: true` on the backend. The flag is set per food in the admin panel; the category checkbox there just sets it on all the foods of that category. MyStampa reads it from each order item (`orderItems[].food.separateTicket`), so changes apply from the next order. One ticket is printed per order line (e.g. `3x BIRRA`), always with the line notes. The old category and food selection in the MyStampa web UI has been removed.
 
 ---
 
@@ -229,7 +232,7 @@ mystampa/
 │   │   └── logger.ts         # Structured logging, daily files, 7-day retention
 │   └── views/
 │       ├── login.ejs         # Web UI login page
-│       └── config.ejs        # Web UI configuration page
+│       └── config.ejs        # Web UI printer status page
 ├── public/                   # Static files (favicon, banner, login-bg, logo.svg)
 ├── resources/                # Bundled print resources (mysagralogo.png footer)
 ├── Dockerfile

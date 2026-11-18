@@ -27,7 +27,6 @@ import { fetchAndCacheSettings, applySettings } from './utils/settingsCache';
 const log = createLogger('app');
 const sseLog = createLogger('sse');
 const printersLog = createLogger('printers');
-const configLog = createLogger('config');
 
 if (!process.env.API_KEY) {
   // console on purpose: the logger's streams start flowing on the next tick,
@@ -438,28 +437,6 @@ async function runPrinterStatusCheck(): Promise<void> {
 // Kick off initialization asynchronously. Errors are logged.
 initialize().catch((err) => log.error('Initialization error', { err }));
 
-// Load saved config from config.json to populate env for print handler
-const CONFIG_FILE = path.join(process.cwd(), 'data', 'config.json');
-try {
-  if (fs.existsSync(CONFIG_FILE)) {
-    const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    if (savedConfig.singleTicketCategories) {
-      process.env.SINGLE_TICKET_CATEGORIES = savedConfig.singleTicketCategories.join(',');
-      configLog.info('Loaded single ticket categories from config.json', { count: savedConfig.singleTicketCategories.length });
-    }
-    if (savedConfig.excludedFoodIds) {
-      process.env.EXCLUDED_FOOD_IDS = savedConfig.excludedFoodIds.join(',');
-      configLog.info('Loaded excludedFoodIds from config.json', { count: savedConfig.excludedFoodIds.length });
-    }
-    if (savedConfig.singleTicketNotesEnabled !== undefined) {
-      process.env.SINGLE_TICKET_NOTES_ENABLED = savedConfig.singleTicketNotesEnabled ? 'true' : 'false';
-      configLog.info('Loaded singleTicketNotesEnabled from config.json', { singleTicketNotesEnabled: savedConfig.singleTicketNotesEnabled });
-    }
-  }
-} catch (e) {
-  configLog.error('Failed to load config.json on startup', { err: e });
-}
-
 // Configure Express
 const app = express();
 app.use(express.json());
@@ -591,66 +568,6 @@ app.get('/config', (req: Request, res: Response) => {
   res.render('config');
 });
 
-// --- API Routes for config page ---
-
-/**
- * Read the config file asynchronously. Returns default empty config if file doesn't exist.
- */
-interface AppConfig {
-  singleTicketCategories: string[];
-  excludedFoodIds: string[];
-  singleTicketNotesEnabled: boolean;
-}
-
-async function readConfig(): Promise<AppConfig> {
-  try {
-    await fs.promises.access(CONFIG_FILE);
-    const raw = await fs.promises.readFile(CONFIG_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    return {
-      singleTicketCategories: parsed.singleTicketCategories ?? [],
-      excludedFoodIds: parsed.excludedFoodIds ?? [],
-      singleTicketNotesEnabled: parsed.singleTicketNotesEnabled ?? false,
-    };
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-      configLog.error('Failed to read config file', { err: e });
-    }
-  }
-  return { singleTicketCategories: [], excludedFoodIds: [], singleTicketNotesEnabled: false };
-}
-
-async function writeConfig(config: AppConfig): Promise<void> {
-  await fs.promises.mkdir(path.dirname(CONFIG_FILE), { recursive: true });
-  await fs.promises.writeFile(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
-  process.env.SINGLE_TICKET_CATEGORIES = config.singleTicketCategories.join(',');
-  process.env.EXCLUDED_FOOD_IDS = config.excludedFoodIds.join(',');
-  process.env.SINGLE_TICKET_NOTES_ENABLED = config.singleTicketNotesEnabled ? 'true' : 'false';
-}
-
-/**
- * GET /api/categories - Fetch categories from external API.
- * Supports ?include=foods to get categories with their foods embedded.
- */
-app.get('/api/categories', async (req: Request, res: Response) => {
-  const token = req.cookies?.mystampa_session;
-  if (!token) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  try {
-    const params: Record<string, string> = {};
-    if (req.query.include) params.include = String(req.query.include);
-    const resp = await axios.get(`${API_URL}/v1/categories`, {
-      timeout: 10000,
-      params,
-      headers: { Accept: 'application/json', Cookie: `mysagra_session=${token}` },
-    });
-    return res.json(resp.data);
-  } catch (err: any) {
-    log.error('Failed to fetch categories', { err });
-    return res.status(502).json({ error: 'Failed to fetch categories' });
-  }
-});
-
 /**
  * GET /api/printers - Return in-memory printers list with live status
  */
@@ -666,40 +583,6 @@ app.get('/api/printers', (req: Request, res: Response) => {
     description: p.description,
     status: p.status,
   })));
-});
-
-/**
- * GET /api/config - Get current config
- */
-app.get('/api/config', async (req: Request, res: Response) => {
-  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  return res.json(await readConfig());
-});
-
-/**
- * POST /api/config - Save config
- */
-app.post('/api/config', async (req: Request, res: Response) => {
-  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
-  const { singleTicketCategories, excludedFoodIds, singleTicketNotesEnabled } = req.body;
-  if (!Array.isArray(singleTicketCategories)) {
-    return res.status(400).json({ error: 'singleTicketCategories must be an array' });
-  }
-  const current = await readConfig();
-  const config: AppConfig = {
-    singleTicketCategories,
-    excludedFoodIds: Array.isArray(excludedFoodIds) ? excludedFoodIds : current.excludedFoodIds,
-    singleTicketNotesEnabled: singleTicketNotesEnabled !== undefined ? Boolean(singleTicketNotesEnabled) : current.singleTicketNotesEnabled,
-  };
-  try {
-    await writeConfig(config);
-  } catch (e) {
-    configLog.error('Failed to write config', { err: e });
-    return res.status(500).json({ error: 'Failed to save config' });
-  }
-  return res.json({ ok: true, config });
 });
 
 /**

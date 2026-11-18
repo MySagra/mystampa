@@ -183,6 +183,8 @@ export interface OrderItemIn {
     id: string;
     name: string;
     printerId?: string | null;
+    /** Printed on its own single ticket after the cash receipt */
+    separateTicket?: boolean;
     category?: {
       id: string;
       name: string;

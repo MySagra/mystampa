@@ -547,7 +547,7 @@ export async function buildCashReceipt(
 
       let ticketStr = `\n\n${TXT_BIG}${qty}x ${name}${TXT_NORMAL}\n`;
 
-      // Note presenti solo se abilitate nelle impostazioni (filtrate a monte)
+      // Note della riga, stampate sempre
       if (trimStr(ticket.notes)) {
         for (const wrapNote of wrapText(`NOTE: ${trimStr(ticket.notes)}`, RECEIPT_W, "      ")) {
           ticketStr += `${TXT_MEDIUM}${wrapNote}${TXT_NORMAL}\n`;

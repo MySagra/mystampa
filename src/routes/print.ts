@@ -176,20 +176,8 @@ export async function handlePrintOrder(
   // Lines for single tickets to be appended to the cash receipt
   const singleTickets: KitchenReceiptLine[] = [];
 
-  // Fetch single ticket categories config
-  const singleTicketCategoriesEnv = process.env.SINGLE_TICKET_CATEGORIES;
-  const targetCategoryIds = singleTicketCategoriesEnv
-    ? singleTicketCategoriesEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
-    : [];
-
-  const excludedFoodIdsEnv = process.env.EXCLUDED_FOOD_IDS;
-  const excludedFoodIds = excludedFoodIdsEnv
-    ? excludedFoodIdsEnv.split(',').map(s => s.trim()).filter(s => s.length > 0)
-    : [];
-
   // Pickup ticket per station, from the backend settings (stations.pickupTickets)
   const stationTicketsEnabled = getSettings()?.settings?.stations?.pickupTickets === true;
-  const singleTicketNotesEnabled = process.env.SINGLE_TICKET_NOTES_ENABLED === 'true';
 
   // Determine which items go to kitchen printers.
   // For reprint-order events, use reprintOrderItems exclusively (even if empty = no kitchen print).
@@ -214,7 +202,6 @@ export async function handlePrintOrder(
 
   // Build cash receipt lines from orderItems (always the full order)
   for (const it of order.orderItems) {
-    const fId = it.foodId || it.food?.id;
     const foodName = it.food?.name ?? `FOOD(${it.id})`;
     const qty = it.quantity ?? 1;
     const notes = it.notes ?? null;
@@ -231,10 +218,10 @@ export async function handlePrintOrder(
 
     cashLines.push({ foodName, quantity: qty, notes, unitPrice, surcharge });
 
-    const categoryId = it.food?.category?.id;
-    if (categoryId && targetCategoryIds.includes(String(categoryId)) &&
-        !(fId && excludedFoodIds.includes(String(fId)))) {
-      singleTickets.push({ foodName, quantity: qty, notes: singleTicketNotesEnabled ? notes : null });
+    // Single ticket: flag set per food on the backend (the category toggle in
+    // the admin panel just sets it on all its foods). Notes are always printed.
+    if (it.food?.separateTicket === true) {
+      singleTickets.push({ foodName, quantity: qty, notes });
     }
   }
 
