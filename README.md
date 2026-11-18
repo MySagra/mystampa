@@ -25,7 +25,7 @@
 
 It also monitors the status of all configured printers (online, offline, paper out) and reports changes back to the backend in real time.
 
-A lightweight web UI is included for viewing live printer status. All print settings come from the MySagra backend.
+A small read-only web page shows the live printer status (no login). All print settings come from the MySagra backend.
 
 ---
 
@@ -45,7 +45,6 @@ A lightweight web UI is included for viewing live printer status. All print sett
 - **Backend sync** — PATCHes the printer status on the backend only when it changes
 
 ### Web UI
-- **Login** — authenticates against the MySagra backend using user credentials
 - **Printer overview** — live list of all printers with their current status
 
 ---
@@ -70,9 +69,7 @@ MySagra Backend
 4. When a `settings-update` event arrives, it replaces the cached settings (e.g. a new receipt logo).
 5. Every 2 minutes it probes all printers and PATCHes any status changes to the backend.
 
-**Authentication is split into two independent layers:**
-- **Automated service** → `X-API-KEY` header on all backend API calls
-- **Web UI** → standard credential login against `API_URL/auth/login`; the returned session token is stored in a cookie for the duration of the session
+**Authentication:** MyStampa calls the backend only with the `X-API-KEY` header. The printer status page has no login: it is read-only and shows only names, addresses and status of the printers, so keep port 3032 reachable from the local network only.
 
 ---
 
@@ -108,7 +105,7 @@ MySagra Backend
    npm run dev
    ```
 
-5. **Open the web UI**
+5. **Open the printer status page**
 
    Navigate to [http://localhost:3032](http://localhost:3032)
 
@@ -131,7 +128,7 @@ MyStampa is designed to run as a Docker container alongside the rest of the MySa
    docker-compose up -d
    ```
 
-3. **Access the web UI**
+3. **Open the printer status page**
 
    The application will be available at [http://localhost:3032](http://localhost:3032)
 
@@ -197,7 +194,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 
 > **How to get the API key**: the API key is generated and displayed after your first login to the MySagra admin panel. Once obtained, copy it into the `API_KEY` field in your `.env` file and restart the service.
 
-> The API key is used exclusively by the automated service (SSE connection, printer fetching, status patching, food/cash-register lookups). The web UI authenticates separately using user credentials.
+> The API key is used by the automated service for every backend call (SSE connection, printers, settings, status patching, cash-register lookups).
 
 ---
 
@@ -231,9 +228,8 @@ mystampa/
 │   │   ├── settingsCache.ts  # Backend settings (/v1/settings + settings-update) and receipt logo
 │   │   └── logger.ts         # Structured logging, daily files, 7-day retention
 │   └── views/
-│       ├── login.ejs         # Web UI login page
-│       └── config.ejs        # Web UI printer status page
-├── public/                   # Static files (favicon, banner, login-bg, logo.svg)
+│       └── printers.ejs      # Printer status page (served at /)
+├── public/                   # Static files (favicon, banner, logo.svg)
 ├── resources/                # Bundled print resources (mysagralogo.png footer)
 ├── Dockerfile
 ├── docker-compose.yml

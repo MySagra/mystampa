@@ -3,16 +3,14 @@
  *
  * The service authenticates against an external API, fetches printers,
  * caches them in memory, and listens for SSE events to process print
- * jobs. It also serves EJS pages for login and configuration.
+ * jobs. It also serves a read-only page with the live printer status.
  */
 
 // Must be the first import: other modules read process.env at load time.
 import 'dotenv/config';
 import { createLogger } from './utils/logger';
 import express, { Request, Response } from 'express';
-import axios from 'axios';
 import axiosInstance from './utils/axiosInstance';
-import cookieParser from 'cookie-parser';
 import net from 'net';
 import path from 'path';
 import fs from 'fs';
@@ -439,9 +437,6 @@ initialize().catch((err) => log.error('Initialization error', { err }));
 
 // Configure Express
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
 
 // Serve static files
 const publicDir = path.join(process.cwd(), 'public');
@@ -459,121 +454,23 @@ if (!fs.existsSync(viewsDir)) {
 }
 
 // --- Web Routes ---
+// Read-only page with the live printer status: no login, it only shows the
+// printers list already kept in memory.
 
 /**
- * GET / - Login page
+ * GET / - Printer status page
  */
-app.get('/', (req: Request, res: Response) => {
-  // If already authenticated via cookie, redirect to config
-  const token = req.cookies?.mystampa_session;
-  if (token) {
-    return res.redirect('/config');
-  }
-  res.render('login', { error: null });
+app.get('/', (_req: Request, res: Response) => {
+  res.render('printers');
 });
 
-const ALLOWED_ROLES = ['admin', 'maintainer'];
-
-/**
- * Check that the request has a valid session cookie and an allowed role cookie.
- * Returns true if authorized, false otherwise.
- */
-function isAuthorized(req: Request): boolean {
-  const token = req.cookies?.mystampa_session;
-  const role = req.cookies?.mystampa_role;
-  return !!(token && role && ALLOWED_ROLES.includes(role));
-}
-
-/**
- * POST /login - Handle login form submission
- */
-app.post('/login', async (req: Request, res: Response) => {
-  const { username, password } = req.body;
-
-  if (!username || !password) {
-    return res.render('login', { error: 'Username e Password sono obbligatori' });
-  }
-
-  try {
-    // Use plain axios to avoid the retry interceptor — fail immediately on wrong credentials
-    const resp = await axios.post(`${API_URL}/auth/login`, { username, password }, {
-      timeout: 10000,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    });
-
-    const setCookieHeader = resp.headers['set-cookie'];
-    let tokenValue: string | undefined;
-    let sessionCookieStr: string | undefined;
-    if (setCookieHeader) {
-      const cookieHeaders = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-      for (const c of cookieHeaders) {
-        // Match the session cookie name allowing optional spaces around = and before ;
-        const match = c.match(/(?:^|;)\s*mysagra_session\s*=\s*([^;]*)/);
-        if (match) { tokenValue = match[1].trim(); sessionCookieStr = c; break; }
-      }
-    }
-
-    if (!tokenValue) {
-      return res.render('login', { error: 'Login riuscito ma token non trovato nella risposta' });
-    }
-
-    const role: string = resp.data?.role ?? '';
-    if (!ALLOWED_ROLES.includes(role)) {
-      return res.render('login', { error: 'Accesso negato: ruolo non autorizzato' });
-    }
-
-    // Derive cookie lifetime from upstream Max-Age / Expires, fallback 6h
-    const DEFAULT_MAX_AGE = 6 * 60 * 60 * 1000;
-    let maxAge = DEFAULT_MAX_AGE;
-    if (sessionCookieStr) {
-      const maxAgeMatch = sessionCookieStr.match(/(?:^|;)\s*Max-Age\s*=\s*(\d+)/i);
-      const expiresMatch = sessionCookieStr.match(/(?:^|;)\s*Expires\s*=\s*([^;]+)/i);
-      if (maxAgeMatch) {
-        maxAge = parseInt(maxAgeMatch[1], 10) * 1000;
-      } else if (expiresMatch) {
-        const expMs = Date.parse(expiresMatch[1].trim());
-        if (!isNaN(expMs) && expMs > Date.now()) {
-          maxAge = expMs - Date.now();
-        }
-      }
-    }
-
-    const cookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax' as const,
-      maxAge,
-    };
-    res.cookie('mystampa_session', tokenValue, cookieOptions);
-    res.cookie('mystampa_role', role, cookieOptions);
-
-    return res.redirect('/config');
-  } catch (err: any) {
-    const status = err.response?.status;
-    if (status === 401) return res.render('login', { error: 'Credenziali non valide' });
-    return res.render('login', { error: 'Errore durante il login' });
-  }
-});
-
-/**
- * GET /config - Configuration page (requires admin or maintainer role)
- */
-app.get('/config', (req: Request, res: Response) => {
-  if (!req.cookies?.mystampa_session) {
-    return res.redirect('/');
-  }
-  if (!isAuthorized(req)) {
-    return res.status(403).render('login', { error: 'Accesso negato: ruolo non autorizzato' });
-  }
-  res.render('config');
-});
+// Old address of the page (it used to be behind a login)
+app.get('/config', (_req: Request, res: Response) => res.redirect(301, '/'));
 
 /**
  * GET /api/printers - Return in-memory printers list with live status
  */
-app.get('/api/printers', (req: Request, res: Response) => {
-  if (!req.cookies?.mystampa_session) return res.status(401).json({ error: 'Not authenticated' });
-  if (!isAuthorized(req)) return res.status(403).json({ error: 'Forbidden' });
+app.get('/api/printers', (_req: Request, res: Response) => {
   return res.json(printers.map((p) => ({
     id: p.id,
     name: p.name,
@@ -583,15 +480,6 @@ app.get('/api/printers', (req: Request, res: Response) => {
     description: p.description,
     status: p.status,
   })));
-});
-
-/**
- * POST /logout - Clear session and redirect to login
- */
-app.post('/logout', (_req: Request, res: Response) => {
-  res.clearCookie('mystampa_session');
-  res.clearCookie('mystampa_role');
-  res.redirect('/');
 });
 
 // Start listening
